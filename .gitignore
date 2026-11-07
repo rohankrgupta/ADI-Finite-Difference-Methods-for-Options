@@ -1,0 +1,27 @@
+# Course material (not ours to redistribute)
+714_fp_info.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# C++ / CUDA builds
+build/
+cmake-build-*/
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.out
+*.exe
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
