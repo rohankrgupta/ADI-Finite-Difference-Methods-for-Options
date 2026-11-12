@@ -1,24 +1,13 @@
 import numpy as np
 import pytest
-from scipy.stats import norm
 
 from adi_heston import HestonParams, OptionSpec
 from adi_heston.fd import apply_three_point, second_derivative_weights
 from adi_heston.grid import Grid, stock_grid
+from adi_heston.reference import bs_gamma, bs_put, heston_put
 from adi_heston.solver import solve
 
 K, T = 100.0, 1.0
-
-
-def bs_put(S, K, T, r, q, sigma):
-    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    return K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1)
-
-
-def bs_gamma(S, K, T, r, q, sigma):
-    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    return np.exp(-q * T) * norm.pdf(d1) / (S * sigma * np.sqrt(T))
 
 
 # Black-Scholes reduction: xi = 0 and v0 = theta, with theta exactly on a v-node, so that
@@ -109,7 +98,39 @@ def test_price_falls_with_stock_and_rises_with_variance(heston_result):
     assert by_variance[0] < by_variance[1] < by_variance[2]
 
 
-# ---- 5. Interface checks ------------------------------------------------------
+# ---- 5. Agreement with the semi-analytic Heston price ------------------------------
+
+
+def adi_error(rho, m, n, n_steps):
+    p = heston_params(rho)
+    ref = heston_put(p, OptionSpec(K, T), K, 0.04)
+    return abs(solve(p, OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, m, n), n_steps).price(K, 0.04) - ref)
+
+
+def test_adi_converges_to_reference_at_second_order_without_mixed_term():
+    errors = [adi_error(0.0, m, n, m) for m, n in ((50, 25), (100, 50), (200, 100))]
+    assert errors[-1] < 2e-3
+    assert errors[0] / errors[1] > 3.5 and errors[1] / errors[2] > 3.5
+
+
+def test_adi_converges_in_space_with_strong_correlation():
+    # Many time steps make Douglas's first-order time error negligible, isolating the space error.
+    errors = [adi_error(-0.9, m, n, 1000) for m, n in ((50, 25), (100, 50))]
+    assert errors[1] < 1e-2
+    assert errors[0] / errors[1] > 3.5
+
+
+def test_adi_on_published_benchmark_where_feller_fails():
+    p, v0, value = HestonParams(r=0.0, q=0.0, kappa=1.5768, theta=0.0398, xi=0.5751, rho=-0.5711), 0.0175, 5.785155450
+    errors = [
+        abs(solve(p, OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, m, n), N).price(K, v0) - value)
+        for m, n, N in ((100, 50, 200), (200, 100, 400))
+    ]
+    assert errors[0] < 2e-2
+    assert errors[0] / errors[1] > 3.0
+
+
+# ---- 6. Interface checks ------------------------------------------------------
 
 
 def small_problem():
