@@ -93,21 +93,40 @@ def solve(
         raise NotImplementedError("American constraint (Ikonen-Toivanen) is not implemented yet; see task G5")
     if scheme not in SCHEMES:
         raise ValueError(f"unknown scheme {scheme!r}; choose from {sorted(SCHEMES)}")
+    schedule = time_schedule(params, option, n_steps, theta_adi, rannacher_half_steps)
+
+    step = SCHEMES[scheme]
+    ops = build_heston_operators(grid, params)
+    S, _ = grid.mesh()
+    U = option.payoff(S)  # row 0 holds g(0) = K, the Dirichlet value at tau = 0
+
+    for row, (dtau, theta, boundary) in enumerate(schedule):
+        step_fn = douglas_step if row < rannacher_half_steps else step  # start-up always uses Douglas
+        U = step_fn(ops, U, dtau, theta, boundary)
+
+    return SolveResult(grid=grid, U=U, T=option.T)
+
+
+def time_schedule(
+    params: HestonParams,
+    option: OptionSpec,
+    n_steps: int,
+    theta_adi: float = 0.5,
+    rannacher_half_steps: int = 2,
+) -> np.ndarray:
+    """Return the time steps as an array of rows (dtau, theta_adi, boundary value at the step's end).
+
+    The first ``rannacher_half_steps`` rows are the start-up: half-steps with theta_adi = 1,
+    replacing the first rannacher_half_steps/2 full steps. The remaining rows are full
+    steps with the given theta_adi. ``solve()`` runs exactly these rows, and the C++/CUDA
+    fixtures store them as schedule.bin.
+    """
     if rannacher_half_steps < 0 or rannacher_half_steps % 2:
         raise ValueError(f"rannacher_half_steps must be even and >= 0, got {rannacher_half_steps}")
     replaced = rannacher_half_steps // 2
     if n_steps < max(1, replaced):
         raise ValueError(f"need n_steps >= {max(1, replaced)}, got {n_steps}")
-
-    step = SCHEMES[scheme]
-    ops = build_heston_operators(grid, params)
     dtau = option.T / n_steps
-    S, _ = grid.mesh()
-    U = option.payoff(S)  # row 0 holds g(0) = K, the Dirichlet value at tau = 0
-
-    for k in range(1, rannacher_half_steps + 1):  # start-up: Douglas half-steps with theta_adi = 1
-        U = douglas_step(ops, U, 0.5 * dtau, 1.0, dirichlet_value(params, option, 0.5 * k * dtau))
-    for k in range(replaced + 1, n_steps + 1):
-        U = step(ops, U, dtau, theta_adi, dirichlet_value(params, option, k * dtau))
-
-    return SolveResult(grid=grid, U=U, T=option.T)
+    rows = [(0.5 * dtau, 1.0, dirichlet_value(params, option, 0.5 * k * dtau)) for k in range(1, rannacher_half_steps + 1)]
+    rows += [(dtau, theta_adi, dirichlet_value(params, option, k * dtau)) for k in range(replaced + 1, n_steps + 1)]
+    return np.array(rows, dtype=np.float64)
