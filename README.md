@@ -9,7 +9,9 @@ Ikonen–Toivanen operator splitting. We study when the schemes stay accurate an
 correlation, when the variance can reach zero, and near the exercise boundary. We then speed up the
 solver with C++ multithreading and CUDA, and compare their performance.
 
-Proposal: [`docs/proposal.pdf`](docs/proposal.pdf)
+- Proposal: [`docs/proposal.pdf`](docs/proposal.pdf)
+- Problem formulation (the PDE, boundary conditions and discretization): [`docs/formulation.pdf`](docs/formulation.pdf)
+- Phase 1 summary, design decisions and the Phase 2 handoff: [`docs/phase1_summary.md`](docs/phase1_summary.md)
 
 ## Setup
 
