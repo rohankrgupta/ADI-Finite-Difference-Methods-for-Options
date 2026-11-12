@@ -1,0 +1,143 @@
+import numpy as np
+import pytest
+from scipy.stats import norm
+
+from adi_heston import HestonParams, OptionSpec
+from adi_heston.fd import apply_three_point, second_derivative_weights
+from adi_heston.grid import Grid, stock_grid
+from adi_heston.solver import solve
+
+K, T = 100.0, 1.0
+
+
+def bs_put(S, K, T, r, q, sigma):
+    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    return K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1)
+
+
+def bs_gamma(S, K, T, r, q, sigma):
+    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    return np.exp(-q * T) * norm.pdf(d1) / (S * sigma * np.sqrt(T))
+
+
+# Black-Scholes reduction: xi = 0 and v0 = theta, with theta exactly on a v-node, so that
+# grid line evolves as a pure 1D Black-Scholes problem with sigma^2 = theta.
+V_NODES = np.linspace(0.0, 0.2, 11)
+THETA_INDEX = 2
+BS_PARAMS = HestonParams(r=0.03, q=0.01, kappa=2.0, theta=float(V_NODES[THETA_INDEX]), xi=0.0, rho=0.0)
+BS_SIGMA = np.sqrt(BS_PARAMS.theta)
+
+
+def bs_reduction_value(m, n_steps, T=T, rannacher_half_steps=2):
+    grid = Grid(stock_grid(K, 4 * K, m), V_NODES)
+    U = solve(BS_PARAMS, OptionSpec(K, T), grid, n_steps, rannacher_half_steps=rannacher_half_steps).U
+    return grid, U[:, THETA_INDEX]
+
+
+def heston_params(rho):
+    return HestonParams(r=0.025, q=0.0, kappa=1.5, theta=0.04, xi=0.3, rho=rho)
+
+
+# ---- 1. Black-Scholes reduction ---------------------------------------------
+
+
+def test_black_scholes_reduction_is_second_order():
+    exact = bs_put(K, K, T, BS_PARAMS.r, BS_PARAMS.q, BS_SIGMA)
+    errors = []
+    for m, n_steps in ((100, 50), (200, 100)):
+        grid, u = bs_reduction_value(m, n_steps)
+        errors.append(abs(u[np.flatnonzero(grid.s == K)[0]] - exact))
+    assert errors[1] < 2e-3
+    assert errors[0] / errors[1] > 3.5  # doubling the grid and the steps cuts the error by about 4x
+
+
+# ---- 2. Rannacher smoothing --------------------------------------------------
+
+
+def test_rannacher_removes_gamma_oscillations():
+    T_short = 0.25
+    errors = {}
+    for half_steps in (0, 2):
+        grid, u = bs_reduction_value(200, 10, T=T_short, rannacher_half_steps=half_steps)
+        gamma = apply_three_point(second_derivative_weights(grid.s), u)
+        exact = bs_gamma(grid.s[1:-1], K, T_short, BS_PARAMS.r, BS_PARAMS.q, BS_SIGMA)
+        near_K = (grid.s[1:-1] > 0.8 * K) & (grid.s[1:-1] < 1.2 * K)
+        errors[half_steps] = np.abs(gamma[1:-1] - exact)[near_K].max()
+        max_gamma = exact[near_K].max()
+    assert errors[0] > max_gamma  # without smoothing the oscillation is larger than Gamma itself
+    assert errors[2] < 0.05 * max_gamma
+    assert errors[2] < errors[0] / 50
+
+
+# ---- 3. Order in time for Heston ---------------------------------------------
+
+
+def time_order(rho):
+    grid = Grid.build(K, 8 * K, 5.0, 60, 30)
+    prices = [solve(heston_params(rho), OptionSpec(K, T), grid, N).price(K, 0.04) for N in (40, 80, 160)]
+    d = np.abs(np.diff(prices))
+    return np.log2(d[0] / d[1])
+
+
+def test_douglas_is_second_order_in_time_without_mixed_term():
+    assert time_order(0.0) > 1.8
+
+
+def test_douglas_is_first_order_in_time_with_mixed_term():
+    assert 0.8 < time_order(-0.9) < 1.2
+
+
+# ---- 4. Sanity for a Heston put with strong correlation ----------------------
+
+
+@pytest.fixture(scope="module")
+def heston_result():
+    return solve(heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 100, 50), 100)
+
+
+def test_price_within_no_arbitrage_bounds(heston_result):
+    p = heston_params(-0.9)
+    price = heston_result.price(K, 0.04)
+    assert max(K * np.exp(-p.r * T) - K * np.exp(-p.q * T), 0.0) <= price <= K * np.exp(-p.r * T)
+
+
+def test_price_falls_with_stock_and_rises_with_variance(heston_result):
+    by_stock = [heston_result.price(S, 0.04) for S in (80.0, 100.0, 120.0)]
+    by_variance = [heston_result.price(K, v0) for v0 in (0.02, 0.04, 0.08)]
+    assert by_stock[0] > by_stock[1] > by_stock[2]
+    assert by_variance[0] < by_variance[1] < by_variance[2]
+
+
+# ---- 5. Interface checks ------------------------------------------------------
+
+
+def small_problem():
+    return heston_params(-0.5), Grid.build(K, 8 * K, 5.0, 20, 10)
+
+
+def test_american_not_supported_yet():
+    p, g = small_problem()
+    with pytest.raises(NotImplementedError):
+        solve(p, OptionSpec(K, T, american=True), g, 10)
+
+
+@pytest.mark.parametrize("kwargs", [dict(scheme="nope"), dict(rannacher_half_steps=3), dict(rannacher_half_steps=-2)])
+def test_bad_settings_rejected(kwargs):
+    p, g = small_problem()
+    with pytest.raises(ValueError):
+        solve(p, OptionSpec(K, T), g, 10, **kwargs)
+
+
+def test_read_off_outside_grid_rejected():
+    p, g = small_problem()
+    result = solve(p, OptionSpec(K, T), g, 10)
+    with pytest.raises(ValueError):
+        result.price(K, 6.0)
+
+
+def test_read_off_matches_grid_value_at_a_node():
+    p, g = small_problem()
+    result = solve(p, OptionSpec(K, T), g, 10)
+    i, j = int(np.flatnonzero(g.s == K)[0]), 3
+    assert result.price(K, g.v[j]) == pytest.approx(result.U[i, j], rel=1e-10)
