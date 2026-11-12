@@ -25,3 +25,6 @@ cmake-build-*/
 .vscode/
 .idea/
 .DS_Store
+
+# Generated test outputs that are not committed (regenerate with: python -m adi_heston.fixtures generate --case medium)
+fixtures/medium/

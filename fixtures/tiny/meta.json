@@ -1,0 +1,111 @@
+{
+  "format": "float64, little-endian, row-major (C order), no header",
+  "case": "tiny",
+  "m": 5,
+  "n": 4,
+  "n_steps": 4,
+  "rannacher_half_steps": 2,
+  "params": {
+    "r": 0.025,
+    "q": 0.01,
+    "kappa": 1.5,
+    "theta": 0.04,
+    "xi": 0.3,
+    "rho": -0.9
+  },
+  "option": {
+    "K": 100.0,
+    "T": 1.0,
+    "american": false
+  },
+  "S_max": 800.0,
+  "V_max": 5.0,
+  "solve_c": 0.125,
+  "douglas_step_args": {
+    "dtau": 0.25,
+    "theta_adi": 0.5,
+    "boundary": 99.37694906233946
+  },
+  "shapes": {
+    "a1": [
+      3,
+      6,
+      5
+    ],
+    "a2": [
+      3,
+      6,
+      5
+    ],
+    "a0_coef": [
+      6,
+      5
+    ],
+    "w_s": [
+      6,
+      3
+    ],
+    "w_v": [
+      5,
+      3
+    ],
+    "U0": [
+      6,
+      5
+    ],
+    "schedule": [
+      5,
+      3
+    ],
+    "kernel_input": [
+      6,
+      5
+    ],
+    "apply_A0": [
+      6,
+      5
+    ],
+    "apply_A1": [
+      6,
+      5
+    ],
+    "apply_A2": [
+      6,
+      5
+    ],
+    "solve_A1": [
+      6,
+      5
+    ],
+    "solve_A2": [
+      6,
+      5
+    ],
+    "douglas_step": [
+      6,
+      5
+    ],
+    "U_final": [
+      6,
+      5
+    ]
+  },
+  "outputs": [
+    "apply_A0",
+    "apply_A1",
+    "apply_A2",
+    "solve_A1",
+    "solve_A2",
+    "douglas_step",
+    "U_final"
+  ],
+  "tolerances": {
+    "apply_A0": 1e-12,
+    "apply_A1": 1e-12,
+    "apply_A2": 1e-12,
+    "solve_A1": 1e-12,
+    "solve_A2": 1e-12,
+    "douglas_step": 1e-12,
+    "U_final": 1e-10
+  }
+}
