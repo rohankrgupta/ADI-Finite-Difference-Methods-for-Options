@@ -20,8 +20,9 @@ The mathematical background (the PDE, the boundary conditions and why each piece
 | `operators.py` | The Heston operator split `A = A0 + A1 + A2` as coefficient arrays, with all boundaries | `test_operators.py` |
 | `solver.py` | Douglas ADI time stepping, Rannacher start-up, and the price read-off | `test_solver.py` |
 | `reference.py` | Independent prices: Black–Scholes (exact) and Heston (semi-analytic) | `test_reference.py` |
+| `fixtures.py` | Writes the saved Python outputs for the C++ and CUDA ports, and checks a port against them (Section 4.5) | `test_fixtures.py` |
 
-Setup is in the [README](../README.md). The whole suite is 107 tests and runs in about 3.5 seconds:
+Setup is in the [README](../README.md). The whole suite is 116 tests and runs in about 4 seconds:
 
 ```bash
 pytest
@@ -201,7 +202,8 @@ The compiled code knows no finance: it never sees payoffs, grids or the Rannache
 
 - **Memory layout:** row-major (C order), float64. Node (i, j) is at position `i*(n+1) + j`. **v-lines are contiguous; s-lines are strided.**
 - **The schedule** for `n_steps = N` with the default start-up is two entries of `(T/(2N), 1.0, K e^{-r*k*T/(2N)})` for
-  k = 1, 2, followed by N - 1 entries of `(T/N, 0.5, K e^{-r*k*T/N})` for k = 2..N.
+  k = 1, 2, followed by N - 1 entries of `(T/N, 0.5, K e^{-r*k*T/N})` for k = 2..N. It is built by
+  `solver.time_schedule(...)`, which `solve()` itself uses, so Python and the ports run exactly the same steps.
 
 ### 4.3 The six kernels
 
@@ -232,10 +234,47 @@ The reference implementations are `HestonOperators.apply_A0/A1/A2`, `HestonOpera
 
 ### 4.5 Checking a port against Python
 
-- Each kernel is checked on its own against saved Python outputs, so a disagreement points to a specific kernel.
-- The algorithm is the same (Thomas without pivoting, same order of operations), but compilers reorder arithmetic and use
-  fused multiply-add instructions. **Expect agreement to about 1e-12 relative, not bit-for-bit.**
-- **Still to be finalized:** the file format for the saved outputs, the exact tolerances, and the script that generates them.
+Saved Python inputs and expected outputs live in [`fixtures/`](../fixtures). They are produced by
+`python/adi_heston/fixtures.py`.
+
+**File format.** Every array is a raw `.bin` file: float64, little-endian, row-major (C order), no header. It loads
+with a single `fread` into a `double` buffer. Each case folder also has a `meta.json` with every shape and scalar.
+
+| File | Contents |
+|---|---|
+| `a1.bin`, `a2.bin`, `a0_coef.bin`, `w_s.bin`, `w_v.bin` | operator inputs (Section 4.2) |
+| `U0.bin`, `schedule.bin` | starting values, and the step schedule as rows of (dtau, theta_adi, boundary) |
+| `kernel_input.bin` | one fixed test array fed to every kernel |
+| `apply_A0.bin`, `apply_A1.bin`, `apply_A2.bin` | expected kernel outputs on `kernel_input` |
+| `solve_A1.bin`, `solve_A2.bin` | expected solves with right-hand side `kernel_input` and `c = meta["solve_c"]` |
+| `douglas_step.bin` | one step from `kernel_input`, with the arguments in `meta["douglas_step_args"]` |
+| `U_final.bin` | the full run: start from `U0` and apply `douglas_step` for every row of `schedule.bin` |
+
+**Cases.** All use the same test problem: r = 0.025, q = 0.01, kappa = 1.5, theta = 0.04, xi = 0.3, rho = -0.9,
+K = 100, T = 1, S_max = 800, V_max = 5.
+
+| Case | Grid | Steps | In the repo? |
+|---|---|---|---|
+| `tiny` | 6 x 5 | 4 | yes; small enough to print and debug by hand |
+| `small` | 21 x 11 | 20 | yes; the main check |
+| `medium` | 101 x 51 | 50 | no; generate with `python -m adi_heston.fixtures generate --case medium` |
+
+**Checking a port.** The port writes its outputs into a folder, using the same file names and format. Then:
+
+```bash
+python -m adi_heston.fixtures check fixtures/small path/to/port_output
+```
+
+This prints PASS or FAIL per output, with its relative error (the largest difference divided by the largest expected
+value). An output the port has not written yet is reported as "not provided", so kernels can be checked one at a time.
+The exit code is 1 if anything fails.
+
+**Tolerances** (double precision): **1e-12** for each kernel and for `douglas_step`, and **1e-10** for `U_final`.
+The algorithm is the same, but compilers reorder arithmetic and use fused multiply-add instructions, so agreement is
+close but not bit-for-bit. A float32 port would need its own, looser tolerances (about 1e-5).
+
+**Evidence the files are enough.** A test (`test_fixtures.py`) implements the six kernels using only these files and
+the definitions in Section 4.3, without importing the solver. It passes every check, with errors between 0 and 2e-15.
 
 ### 4.6 American options (later)
 
