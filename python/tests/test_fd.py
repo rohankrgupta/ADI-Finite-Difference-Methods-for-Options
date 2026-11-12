@@ -5,9 +5,10 @@ from adi_heston.fd import (
     apply_three_point,
     first_derivative_weights,
     forward_first_derivative_weights,
+    mixed_derivative,
     second_derivative_weights,
 )
-from adi_heston.grid import stock_grid
+from adi_heston.grid import Grid, stock_grid
 
 
 def sinh_grid(m):
@@ -105,3 +106,65 @@ def test_apply_three_point_works_along_axis_0_of_a_2d_array():
 def test_bad_grids_rejected(x):
     with pytest.raises(ValueError):
         first_derivative_weights(np.array(x))
+
+
+# ---- mixed derivative u_sv --------------------------------------------------
+
+
+def small_grid(m=12, n=10):
+    return Grid.build(K=10.0, S_max=40.0, V_max=2.0, m=m, n=n, d=0.1)
+
+
+def mixed(grid, U):
+    return mixed_derivative(first_derivative_weights(grid.s), first_derivative_weights(grid.v), U)
+
+
+def test_mixed_derivative_exact_for_s2_v2():
+    g = small_grid()
+    S, V = g.mesh()
+    np.testing.assert_allclose(mixed(g, S**2 * V**2)[1:-1, 1:-1], (4 * S * V)[1:-1, 1:-1], rtol=1e-9)
+
+
+def test_mixed_derivative_exact_for_any_biquadratic():
+    g = small_grid()
+    S, V = g.mesh()
+    rng = np.random.default_rng(0)
+    c = rng.normal(size=(3, 3))  # u = sum c[a, b] s^a v^b with a, b <= 2
+    U = sum(c[a, b] * S**a * V**b for a in range(3) for b in range(3))
+    exact = sum(c[a, b] * a * b * S ** max(a - 1, 0) * V ** max(b - 1, 0) for a in range(3) for b in range(3))
+    np.testing.assert_allclose(mixed(g, U)[1:-1, 1:-1], exact[1:-1, 1:-1], rtol=1e-8, atol=1e-8)
+
+
+def test_mixed_derivative_is_second_order():
+    errors = []
+    for m in (40, 80):
+        g = Grid(stock_grid(K=1.5, S_max=4.0, m=m, c=0.5), stock_grid(K=1.0, S_max=3.0, m=m, c=0.5))
+        S, V = g.mesh()
+        err = mixed(g, np.sin(S) * np.cos(V)) - (-np.cos(S) * np.sin(V))
+        errors.append(np.max(np.abs(err[1:-1, 1:-1])))
+    assert np.log2(errors[0] / errors[1]) > 1.8
+
+
+def test_mixed_derivative_is_zero_on_all_edges():
+    g = small_grid()
+    D = mixed(g, np.random.default_rng(1).normal(size=g.shape))
+    assert not D[0].any() and not D[-1].any() and not D[:, 0].any() and not D[:, -1].any()
+
+
+def test_mixed_derivative_matches_nine_point_stencil():
+    """The explicit 9-point form, as the C++ and CUDA versions will write it."""
+    g = small_grid(m=7, n=6)
+    ws, wv = first_derivative_weights(g.s), first_derivative_weights(g.v)
+    U = np.random.default_rng(2).normal(size=g.shape)
+    expected = np.zeros(g.shape)
+    for i in range(1, g.m):
+        for j in range(1, g.n):
+            expected[i, j] = sum(ws[i, k + 1] * wv[j, l + 1] * U[i + k, j + l] for k in (-1, 0, 1) for l in (-1, 0, 1))
+    np.testing.assert_allclose(mixed_derivative(ws, wv, U), expected, rtol=1e-12, atol=1e-12)
+
+
+def test_only_corners_on_even_grid_but_nine_points_on_nonuniform_grid():
+    even = first_derivative_weights(np.linspace(0.0, 1.0, 6))
+    assert np.allclose(even[1:-1, 1], 0.0)  # centre weight vanishes, leaving the corners
+    clustered = first_derivative_weights(stock_grid(K=10.0, S_max=40.0, m=12))
+    assert np.all(np.abs(clustered[1:-1, 1]) > 0.0)  # centre weight is nonzero: all 9 points are used

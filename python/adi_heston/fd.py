@@ -79,3 +79,27 @@ def apply_three_point(w: np.ndarray, u: np.ndarray) -> np.ndarray:
     out = np.zeros_like(u)
     out[1:-1] = w[col + (0,)] * u[:-2] + w[col + (1,)] * u[1:-1] + w[col + (2,)] * u[2:]
     return out
+
+
+def mixed_derivative(w_s: np.ndarray, w_v: np.ndarray, U: np.ndarray) -> np.ndarray:
+    """Approximate u_sv at the interior nodes as the s-derivative of the v-derivative.
+
+    Args:
+        w_s: First-derivative weights in s, shape (m+1, 3).
+        w_v: First-derivative weights in v, shape (n+1, 3).
+        U: Grid values, shape (m+1, n+1).
+
+    Returns:
+        An array of shape (m+1, n+1). It is zero on all four edges, where the mixed term
+        is either not needed or vanishes.
+
+    The equivalent 9-point stencil puts weight ``w_s[i, k+1] * w_v[j, l+1]`` on
+    ``U[i+k, j+l]`` for k, l in {-1, 0, 1}. On an even grid only the four corners are
+    nonzero. On a non-uniform grid all nine are, because the centre weight of a first
+    derivative is (h+ - h-) / (h- * h+).
+    """
+    U = np.asarray(U, dtype=np.float64)
+    if U.ndim != 2:
+        raise ValueError(f"U must be 2D, got shape {U.shape}")
+    dU_dv = apply_three_point(w_v, U.T).T  # along axis 1; columns 0 and n are zero
+    return apply_three_point(w_s, dU_dv)  # along axis 0; rows 0 and m are zero
