@@ -130,7 +130,18 @@ def test_adi_on_published_benchmark_where_feller_fails():
     assert errors[0] / errors[1] > 3.0
 
 
-# ---- 6. Interface checks ------------------------------------------------------
+# ---- 6. Craig-Sneyd -----------------------------------------------------------
+
+
+def test_craig_sneyd_equals_douglas_without_mixed_term():
+    # With rho = 0 the mixed-term correction is exactly zero, so the second pass repeats the first.
+    p, option, grid = heston_params(0.0), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 40, 20)
+    U_do = solve(p, option, grid, 20, scheme="douglas").U
+    U_cs = solve(p, option, grid, 20, scheme="craig_sneyd").U
+    np.testing.assert_array_equal(U_cs, U_do)
+
+
+# ---- 7. Interface checks ------------------------------------------------------
 
 
 def small_problem():

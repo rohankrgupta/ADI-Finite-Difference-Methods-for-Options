@@ -57,7 +57,29 @@ def douglas_step(ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: fl
     return _implicit_corrections(ops, Y0, theta_adi * dtau, A1U, A2U, boundary_new)  # (b) in s, (c) in v
 
 
-SCHEMES: dict[str, StepFunction] = {"douglas": douglas_step}
+def craig_sneyd_step(
+    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float
+) -> np.ndarray:
+    """Advance U by one Craig-Sneyd ADI step of size dtau.
+
+    A Douglas step gives Y2. The mixed term is then corrected with the average of A0 at
+    the old and new values, and the two implicit stages are repeated:
+
+        Y0~ = Y0 + dtau/2 * (A0 Y2 - A0 U),  followed by stages (b) and (c) from Y0~.
+
+    The cost is 4 stencil sweeps plus 4 batched tridiagonal solves. The scheme is 2nd
+    order in time for theta_adi = 1/2, also with the mixed term. With A0 = 0 it reduces
+    to Douglas. See Haentjens & in 't Hout (2015), eq. (4.2).
+    """
+    A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
+    c = theta_adi * dtau
+    Y0 = U + dtau * (A0U + A1U + A2U)
+    Y2 = _implicit_corrections(ops, Y0, c, A1U, A2U, boundary_new)
+    Y0_tilde = Y0 + 0.5 * dtau * (ops.apply_A0(Y2) - A0U)
+    return _implicit_corrections(ops, Y0_tilde, c, A1U, A2U, boundary_new)
+
+
+SCHEMES: dict[str, StepFunction] = {"douglas": douglas_step, "craig_sneyd": craig_sneyd_step}
 
 
 @dataclass(frozen=True)
