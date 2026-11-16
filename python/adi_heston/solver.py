@@ -81,6 +81,9 @@ def craig_sneyd_step(
 
 SCHEMES: dict[str, StepFunction] = {"douglas": douglas_step, "craig_sneyd": craig_sneyd_step}
 
+# theta_adi used by solve() when none is given (Haentjens & in 't Hout, Section 4).
+DEFAULT_THETA: dict[str, float] = {"douglas": 0.5, "craig_sneyd": 0.5}
+
 
 @dataclass(frozen=True)
 class SolveResult:
@@ -107,7 +110,7 @@ def solve(
     grid: Grid,
     n_steps: int,
     scheme: str = "douglas",
-    theta_adi: float = 0.5,
+    theta_adi: float | None = None,
     rannacher_half_steps: int = 2,
 ) -> SolveResult:
     """Price a European put under Heston by marching from the payoff to tau = T.
@@ -118,7 +121,7 @@ def solve(
         grid: The space grid.
         n_steps: Number of full time steps N, so dtau = T/N.
         scheme: Name of the ADI scheme in ``SCHEMES``.
-        theta_adi: ADI weight for the main steps.
+        theta_adi: ADI weight for the main steps. None uses the scheme's ``DEFAULT_THETA``.
         rannacher_half_steps: Number of Douglas half-steps with theta_adi = 1 at the start.
             They replace the first rannacher_half_steps/2 full steps, which damps the
             error from the payoff kink. Must be even; 0 turns smoothing off.
@@ -127,7 +130,9 @@ def solve(
         raise NotImplementedError("American constraint (Ikonen-Toivanen) is not implemented yet; see task G5")
     if scheme not in SCHEMES:
         raise ValueError(f"unknown scheme {scheme!r}; choose from {sorted(SCHEMES)}")
-    schedule = time_schedule(params, option, n_steps, theta_adi, rannacher_half_steps)
+    if theta_adi is None:
+        theta_adi = DEFAULT_THETA[scheme]
+    schedule =time_schedule(params, option, n_steps, theta_adi, rannacher_half_steps)
 
     step = SCHEMES[scheme]
     ops = build_heston_operators(grid, params)
