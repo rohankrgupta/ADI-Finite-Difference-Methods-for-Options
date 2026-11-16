@@ -21,6 +21,22 @@ from .params import HestonParams, OptionSpec
 StepFunction = Callable[[HestonOperators, np.ndarray, float, float, float], np.ndarray]
 
 
+def _implicit_corrections(
+    ops: HestonOperators, Y0: np.ndarray, c: float, A1X: np.ndarray, A2X: np.ndarray, boundary_new: float
+) -> np.ndarray:
+    """Run the two implicit stages shared by every ADI scheme and return Y2.
+
+    Solves (I - c*A1) Y1 = Y0 - c*A1X along s, then (I - c*A2) Y2 = Y1 - c*A2X along v,
+    where A1X and A2X are A1 and A2 applied to the scheme's base vector. Row 0 of the
+    s-system is set to the Dirichlet value at the new time; its coefficients are zero,
+    so the v-stage leaves it unchanged.
+    """
+    R1 = Y0 - c * A1X
+    R1[0] = boundary_new
+    Y1 = ops.solve_A1(c, R1)
+    return ops.solve_A2(c, Y1 - c * A2X)
+
+
 def douglas_step(ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float) -> np.ndarray:
     """Advance U by one Douglas ADI step of size dtau.
 
@@ -37,12 +53,8 @@ def douglas_step(ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: fl
     present (rho != 0) and 2nd order without it (with theta_adi = 1/2).
     """
     A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
-    c = theta_adi * dtau
     Y0 = U + dtau * (A0U + A1U + A2U)  # (a) predict
-    R1 = Y0 - c * A1U
-    R1[0] = boundary_new  # the Dirichlet row gets the new boundary value
-    Y1 = ops.solve_A1(c, R1)  # (b) correct in s
-    return ops.solve_A2(c, Y1 - c * A2U)  # (c) correct in v; row 0 passes through unchanged
+    return _implicit_corrections(ops, Y0, theta_adi * dtau, A1U, A2U, boundary_new)  # (b) in s, (c) in v
 
 
 SCHEMES: dict[str, StepFunction] = {"douglas": douglas_step}
