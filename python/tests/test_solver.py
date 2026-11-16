@@ -142,21 +142,6 @@ def test_craig_sneyd_equals_douglas_without_mixed_term():
     np.testing.assert_array_equal(U_cs, U_do)
 
 
-def test_craig_sneyd_is_second_order_in_time_with_mixed_term():
-    # The time error at a single node is small enough to change sign, so measure it over
-    # the whole grid against a run with many more steps.
-    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 60, 30)
-    U_fine = solve(p, option, grid, 640, scheme="craig_sneyd").U
-    errors = [np.abs(solve(p, option, grid, N, scheme="craig_sneyd").U - U_fine).max() for N in (20, 40, 80)]
-    assert errors[0] / errors[1] > 3.8 and errors[1] / errors[2] > 3.8
-
-
-def test_craig_sneyd_converges_to_reference_with_strong_correlation():
-    errors = [adi_error(-0.9, m, n, m, scheme="craig_sneyd") for m, n in ((50, 25), (100, 50), (200, 100))]
-    assert errors[-1] < 2e-3
-    assert errors[0] / errors[1] > 3.5 and errors[1] / errors[2] > 3.5
-
-
 # ---- 7. Modified Craig-Sneyd ----------------------------------------------------
 
 
@@ -175,7 +160,29 @@ def test_modified_craig_sneyd_defaults_to_theta_one_third():
     np.testing.assert_array_equal(U_default, U_third)
 
 
-# ---- 8. Interface checks ------------------------------------------------------
+# ---- 8. Second-order schemes with the mixed term --------------------------------
+
+SECOND_ORDER_SCHEMES = ["craig_sneyd", "modified_craig_sneyd"]
+
+
+@pytest.mark.parametrize("scheme", SECOND_ORDER_SCHEMES)
+def test_second_order_in_time_with_mixed_term(scheme):
+    # The time error at a single node is small enough to change sign, so measure it over
+    # the whole grid against a run with many more steps.
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 60, 30)
+    U_fine = solve(p, option, grid, 640, scheme=scheme).U
+    errors = [np.abs(solve(p, option, grid, N, scheme=scheme).U - U_fine).max() for N in (20, 40, 80)]
+    assert errors[0] / errors[1] > 3.8 and errors[1] / errors[2] > 3.8
+
+
+@pytest.mark.parametrize("scheme", SECOND_ORDER_SCHEMES)
+def test_converges_to_reference_with_strong_correlation(scheme):
+    errors = [adi_error(-0.9, m, n, m, scheme=scheme) for m, n in ((50, 25), (100, 50), (200, 100))]
+    assert errors[-1] < 2e-3
+    assert errors[0] / errors[1] > 3.5 and errors[1] / errors[2] > 3.5
+
+
+# ---- 9. Interface checks ------------------------------------------------------
 
 
 def small_problem():
