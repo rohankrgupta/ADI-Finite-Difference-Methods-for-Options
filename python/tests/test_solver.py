@@ -157,7 +157,25 @@ def test_craig_sneyd_converges_to_reference_with_strong_correlation():
     assert errors[0] / errors[1] > 3.5 and errors[1] / errors[2] > 3.5
 
 
-# ---- 7. Interface checks ------------------------------------------------------
+# ---- 7. Modified Craig-Sneyd ----------------------------------------------------
+
+
+def test_modified_craig_sneyd_equals_craig_sneyd_at_theta_half():
+    # The extra correction is scaled by (1/2 - theta_adi), so it vanishes at theta_adi = 1/2.
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 40, 20)
+    U_cs = solve(p, option, grid, 20, scheme="craig_sneyd", theta_adi=0.5).U
+    U_mcs = solve(p, option, grid, 20, scheme="modified_craig_sneyd", theta_adi=0.5).U
+    np.testing.assert_array_equal(U_mcs, U_cs)
+
+
+def test_modified_craig_sneyd_defaults_to_theta_one_third():
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 20, 10)
+    U_default = solve(p, option, grid, 10, scheme="modified_craig_sneyd").U
+    U_third = solve(p, option, grid, 10, scheme="modified_craig_sneyd", theta_adi=1.0 / 3.0).U
+    np.testing.assert_array_equal(U_default, U_third)
+
+
+# ---- 8. Interface checks ------------------------------------------------------
 
 
 def small_problem():

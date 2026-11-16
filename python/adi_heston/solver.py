@@ -79,10 +79,37 @@ def craig_sneyd_step(
     return _implicit_corrections(ops, Y0_tilde, c, A1U, A2U, boundary_new)
 
 
-SCHEMES: dict[str, StepFunction] = {"douglas": douglas_step, "craig_sneyd": craig_sneyd_step}
+def modified_craig_sneyd_step(
+    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float
+) -> np.ndarray:
+    """Advance U by one modified Craig-Sneyd ADI step of size dtau.
+
+    As Craig-Sneyd, but the correction before the second pass also includes all of A:
+
+        Y0~ = Y0 + theta_adi*dtau * A0 (Y2 - U) + (1/2 - theta_adi)*dtau * A (Y2 - U).
+
+    The extra term makes the scheme 2nd order in time for every theta_adi, and it vanishes
+    for theta_adi = 1/2, where the scheme reduces to Craig-Sneyd. The cost is 6 stencil
+    sweeps plus 4 batched tridiagonal solves. See Haentjens & in 't Hout (2015), eq. (4.3).
+    """
+    A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
+    c = theta_adi * dtau
+    Y0 = U + dtau * (A0U + A1U + A2U)
+    Y2 = _implicit_corrections(ops, Y0, c, A1U, A2U, boundary_new)
+    A0Y2 = ops.apply_A0(Y2)
+    AY2_minus_AU = (A0Y2 + ops.apply_A1(Y2) + ops.apply_A2(Y2)) - (A0U + A1U + A2U)
+    Y0_tilde = Y0 + c * (A0Y2 - A0U) + (0.5 - theta_adi) * dtau * AY2_minus_AU
+    return _implicit_corrections(ops, Y0_tilde, c, A1U, A2U, boundary_new)
+
+
+SCHEMES: dict[str, StepFunction] = {
+    "douglas": douglas_step,
+    "craig_sneyd": craig_sneyd_step,
+    "modified_craig_sneyd": modified_craig_sneyd_step,
+}
 
 # theta_adi used by solve() when none is given (Haentjens & in 't Hout, Section 4).
-DEFAULT_THETA: dict[str, float] = {"douglas": 0.5, "craig_sneyd": 0.5}
+DEFAULT_THETA: dict[str, float] = {"douglas": 0.5, "craig_sneyd": 0.5, "modified_craig_sneyd": 1.0 / 3.0}
 
 
 @dataclass(frozen=True)
