@@ -101,10 +101,11 @@ def test_price_falls_with_stock_and_rises_with_variance(heston_result):
 # ---- 5. Agreement with the semi-analytic Heston price ------------------------------
 
 
-def adi_error(rho, m, n, n_steps):
+def adi_error(rho, m, n, n_steps, scheme="douglas"):
     p = heston_params(rho)
     ref = heston_put(p, OptionSpec(K, T), K, 0.04)
-    return abs(solve(p, OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, m, n), n_steps).price(K, 0.04) - ref)
+    grid = Grid.build(K, 8 * K, 5.0, m, n)
+    return abs(solve(p, OptionSpec(K, T), grid, n_steps, scheme=scheme).price(K, 0.04) - ref)
 
 
 def test_adi_converges_to_reference_at_second_order_without_mixed_term():
@@ -139,6 +140,21 @@ def test_craig_sneyd_equals_douglas_without_mixed_term():
     U_do = solve(p, option, grid, 20, scheme="douglas").U
     U_cs = solve(p, option, grid, 20, scheme="craig_sneyd").U
     np.testing.assert_array_equal(U_cs, U_do)
+
+
+def test_craig_sneyd_is_second_order_in_time_with_mixed_term():
+    # The time error at a single node is small enough to change sign, so measure it over
+    # the whole grid against a run with many more steps.
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 60, 30)
+    U_fine = solve(p, option, grid, 640, scheme="craig_sneyd").U
+    errors = [np.abs(solve(p, option, grid, N, scheme="craig_sneyd").U - U_fine).max() for N in (20, 40, 80)]
+    assert errors[0] / errors[1] > 3.8 and errors[1] / errors[2] > 3.8
+
+
+def test_craig_sneyd_converges_to_reference_with_strong_correlation():
+    errors = [adi_error(-0.9, m, n, m, scheme="craig_sneyd") for m, n in ((50, 25), (100, 50), (200, 100))]
+    assert errors[-1] < 2e-3
+    assert errors[0] / errors[1] > 3.5 and errors[1] / errors[2] > 3.5
 
 
 # ---- 7. Interface checks ------------------------------------------------------
