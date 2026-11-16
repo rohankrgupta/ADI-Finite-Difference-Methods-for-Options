@@ -102,14 +102,42 @@ def modified_craig_sneyd_step(
     return _implicit_corrections(ops, Y0_tilde, c, A1U, A2U, boundary_new)
 
 
+def hundsdorfer_verwer_step(
+    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float
+) -> np.ndarray:
+    """Advance U by one Hundsdorfer-Verwer ADI step of size dtau.
+
+    A Douglas step gives Y2. All of A is then corrected with its average over the old and
+    new values, and the implicit stages are repeated relative to Y2 instead of U:
+
+        Y0~ = Y0 + dtau/2 * A (Y2 - U),  then (I - c*A_j) Y_j~ = Y_{j-1}~ - c*A_j Y2.
+
+    The scheme is 2nd order in time for every theta_adi. The cost is 6 stencil sweeps plus
+    4 batched tridiagonal solves. See Haentjens & in 't Hout (2015), eq. (4.4).
+    """
+    A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
+    c = theta_adi * dtau
+    Y0 = U + dtau * (A0U + A1U + A2U)
+    Y2 = _implicit_corrections(ops, Y0, c, A1U, A2U, boundary_new)
+    A1Y2, A2Y2 = ops.apply_A1(Y2), ops.apply_A2(Y2)
+    Y0_tilde = Y0 + 0.5 * dtau * ((ops.apply_A0(Y2) + A1Y2 + A2Y2) - (A0U + A1U + A2U))
+    return _implicit_corrections(ops, Y0_tilde, c, A1Y2, A2Y2, boundary_new)
+
+
 SCHEMES: dict[str, StepFunction] = {
     "douglas": douglas_step,
     "craig_sneyd": craig_sneyd_step,
     "modified_craig_sneyd": modified_craig_sneyd_step,
+    "hundsdorfer_verwer": hundsdorfer_verwer_step,
 }
 
 # theta_adi used by solve() when none is given (Haentjens & in 't Hout, Section 4).
-DEFAULT_THETA: dict[str, float] = {"douglas": 0.5, "craig_sneyd": 0.5, "modified_craig_sneyd": 1.0 / 3.0}
+DEFAULT_THETA: dict[str, float] = {
+    "douglas": 0.5,
+    "craig_sneyd": 0.5,
+    "modified_craig_sneyd": 1.0 / 3.0,
+    "hundsdorfer_verwer": 0.5 + np.sqrt(3.0) / 6.0,
+}
 
 
 @dataclass(frozen=True)
