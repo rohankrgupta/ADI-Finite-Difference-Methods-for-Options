@@ -172,7 +172,7 @@ def test_hundsdorfer_verwer_defaults_to_theta_half_plus_sqrt3_over_6():
 
 # ---- 9. Second-order schemes with the mixed term --------------------------------
 
-SECOND_ORDER_SCHEMES = ["craig_sneyd", "modified_craig_sneyd"]
+SECOND_ORDER_SCHEMES = ["craig_sneyd", "modified_craig_sneyd", "hundsdorfer_verwer"]
 
 
 @pytest.mark.parametrize("scheme", SECOND_ORDER_SCHEMES)
