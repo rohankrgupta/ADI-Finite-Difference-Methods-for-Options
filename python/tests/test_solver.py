@@ -5,7 +5,7 @@ from adi_heston import HestonParams, OptionSpec
 from adi_heston.fd import apply_three_point, second_derivative_weights
 from adi_heston.grid import Grid, stock_grid
 from adi_heston.reference import bs_gamma, bs_put, heston_put
-from adi_heston.solver import solve
+from adi_heston.solver import DEFAULT_THETA, SCHEMES, solve
 
 K, T = 100.0, 1.0
 
@@ -210,6 +210,11 @@ def test_bad_settings_rejected(kwargs):
     p, g = small_problem()
     with pytest.raises(ValueError):
         solve(p, OptionSpec(K, T), g, 10, **kwargs)
+
+
+def test_every_scheme_has_a_default_theta():
+    # solve() looks up DEFAULT_THETA[scheme] when theta_adi is None.
+    assert DEFAULT_THETA.keys() == SCHEMES.keys()
 
 
 def test_read_off_outside_grid_rejected():
