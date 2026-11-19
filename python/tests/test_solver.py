@@ -5,7 +5,7 @@ from adi_heston import HestonParams, OptionSpec
 from adi_heston.fd import apply_three_point, second_derivative_weights
 from adi_heston.grid import Grid, stock_grid
 from adi_heston.reference import bs_gamma, bs_put, heston_put
-from adi_heston.solver import solve
+from adi_heston.solver import DEFAULT_THETA, SCHEMES, solve
 
 K, T = 100.0, 1.0
 
@@ -101,10 +101,11 @@ def test_price_falls_with_stock_and_rises_with_variance(heston_result):
 # ---- 5. Agreement with the semi-analytic Heston price ------------------------------
 
 
-def adi_error(rho, m, n, n_steps):
+def adi_error(rho, m, n, n_steps, scheme="douglas"):
     p = heston_params(rho)
     ref = heston_put(p, OptionSpec(K, T), K, 0.04)
-    return abs(solve(p, OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, m, n), n_steps).price(K, 0.04) - ref)
+    grid = Grid.build(K, 8 * K, 5.0, m, n)
+    return abs(solve(p, OptionSpec(K, T), grid, n_steps, scheme=scheme).price(K, 0.04) - ref)
 
 
 def test_adi_converges_to_reference_at_second_order_without_mixed_term():
@@ -130,7 +131,68 @@ def test_adi_on_published_benchmark_where_feller_fails():
     assert errors[0] / errors[1] > 3.0
 
 
-# ---- 6. Interface checks ------------------------------------------------------
+# ---- 6. Craig-Sneyd -----------------------------------------------------------
+
+
+def test_craig_sneyd_equals_douglas_without_mixed_term():
+    # With rho = 0 the mixed-term correction is exactly zero, so the second pass repeats the first.
+    p, option, grid = heston_params(0.0), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 40, 20)
+    U_do = solve(p, option, grid, 20, scheme="douglas").U
+    U_cs = solve(p, option, grid, 20, scheme="craig_sneyd").U
+    np.testing.assert_array_equal(U_cs, U_do)
+
+
+# ---- 7. Modified Craig-Sneyd ----------------------------------------------------
+
+
+def test_modified_craig_sneyd_equals_craig_sneyd_at_theta_half():
+    # The extra correction is scaled by (1/2 - theta_adi), so it vanishes at theta_adi = 1/2.
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 40, 20)
+    U_cs = solve(p, option, grid, 20, scheme="craig_sneyd", theta_adi=0.5).U
+    U_mcs = solve(p, option, grid, 20, scheme="modified_craig_sneyd", theta_adi=0.5).U
+    np.testing.assert_array_equal(U_mcs, U_cs)
+
+
+def test_modified_craig_sneyd_defaults_to_theta_one_third():
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 20, 10)
+    U_default = solve(p, option, grid, 10, scheme="modified_craig_sneyd").U
+    U_third = solve(p, option, grid, 10, scheme="modified_craig_sneyd", theta_adi=1.0 / 3.0).U
+    np.testing.assert_array_equal(U_default, U_third)
+
+
+# ---- 8. Hundsdorfer-Verwer ------------------------------------------------------
+
+
+def test_hundsdorfer_verwer_defaults_to_theta_half_plus_sqrt3_over_6():
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 20, 10)
+    U_default = solve(p, option, grid, 10, scheme="hundsdorfer_verwer").U
+    U_explicit = solve(p, option, grid, 10, scheme="hundsdorfer_verwer", theta_adi=0.5 + np.sqrt(3.0) / 6.0).U
+    np.testing.assert_array_equal(U_default, U_explicit)
+
+
+# ---- 9. Second-order schemes with the mixed term --------------------------------
+
+SECOND_ORDER_SCHEMES = ["craig_sneyd", "modified_craig_sneyd", "hundsdorfer_verwer"]
+
+
+@pytest.mark.parametrize("scheme", SECOND_ORDER_SCHEMES)
+def test_second_order_in_time_with_mixed_term(scheme):
+    # The time error at a single node is small enough to change sign, so measure it over
+    # the whole grid against a run with many more steps.
+    p, option, grid = heston_params(-0.9), OptionSpec(K, T), Grid.build(K, 8 * K, 5.0, 60, 30)
+    U_fine = solve(p, option, grid, 640, scheme=scheme).U
+    errors = [np.abs(solve(p, option, grid, N, scheme=scheme).U - U_fine).max() for N in (20, 40, 80)]
+    assert errors[0] / errors[1] > 3.8 and errors[1] / errors[2] > 3.8
+
+
+@pytest.mark.parametrize("scheme", SECOND_ORDER_SCHEMES)
+def test_converges_to_reference_with_strong_correlation(scheme):
+    errors = [adi_error(-0.9, m, n, m, scheme=scheme) for m, n in ((50, 25), (100, 50), (200, 100))]
+    assert errors[-1] < 2e-3
+    assert errors[0] / errors[1] > 3.5 and errors[1] / errors[2] > 3.5
+
+
+# ---- 10. Interface checks ------------------------------------------------------
 
 
 def small_problem():
@@ -148,6 +210,11 @@ def test_bad_settings_rejected(kwargs):
     p, g = small_problem()
     with pytest.raises(ValueError):
         solve(p, OptionSpec(K, T), g, 10, **kwargs)
+
+
+def test_every_scheme_has_a_default_theta():
+    # solve() looks up DEFAULT_THETA[scheme] when theta_adi is None.
+    assert DEFAULT_THETA.keys() == SCHEMES.keys()
 
 
 def test_read_off_outside_grid_rejected():
