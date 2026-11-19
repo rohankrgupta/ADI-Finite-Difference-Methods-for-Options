@@ -187,7 +187,7 @@ def solve(
         raise ValueError(f"unknown scheme {scheme!r}; choose from {sorted(SCHEMES)}")
     if theta_adi is None:
         theta_adi = DEFAULT_THETA[scheme]
-    schedule =time_schedule(params, option, n_steps, theta_adi, rannacher_half_steps)
+    schedule = time_schedule(params, option, n_steps, theta_adi, rannacher_half_steps)
 
     step = SCHEMES[scheme]
     ops = build_heston_operators(grid, params)
