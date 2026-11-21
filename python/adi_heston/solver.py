@@ -18,7 +18,7 @@ from .grid import Grid
 from .operators import HestonOperators, build_heston_operators, dirichlet_value
 from .params import HestonParams, OptionSpec
 
-StepFunction = Callable[[HestonOperators, np.ndarray, float, float, float], np.ndarray]
+StepFunction = Callable[[HestonOperators, np.ndarray, float, float, float, "np.ndarray | None"], np.ndarray]
 
 
 def _implicit_corrections(
@@ -37,7 +37,38 @@ def _implicit_corrections(
     return ops.solve_A2(c, Y1 - c * A2X)
 
 
-def douglas_step(ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float) -> np.ndarray:
+def _predict(U: np.ndarray, dtau: float, AU: np.ndarray, lam: np.ndarray | None) -> np.ndarray:
+    """Return the explicit predictor Y0 = U + dtau*A U, plus dtau*lam for an American option.
+
+    The multiplier enters only here; every later stage of every scheme is unchanged
+    (Haentjens & in 't Hout 2015, eqs. 4.1-4.4). With lam = None the result is
+    bit-for-bit the European predictor.
+    """
+    Y0 = U + dtau * AU
+    if lam is not None:
+        Y0 += dtau * lam
+    return Y0
+
+
+def ikonen_toivanen_update(
+    U_bar: np.ndarray, lam: np.ndarray, payoff: np.ndarray, dtau: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply the pointwise Ikonen-Toivanen step after an ADI step and return (U, lam).
+
+        U   = max(U_bar - dtau*lam, payoff)
+        lam = max(0, lam + (payoff - U_bar)/dtau)
+
+    This enforces U >= payoff, lam >= 0 and lam*(U - payoff) = 0 at every node. The nodes
+    with lam > 0 form the exercise region. It costs no linear solve.
+    """
+    U = np.maximum(U_bar - dtau * lam, payoff)
+    lam_new = np.maximum(0.0, lam + (payoff - U_bar) / dtau)
+    return U, lam_new
+
+
+def douglas_step(
+    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float, lam: np.ndarray | None = None
+) -> np.ndarray:
     """Advance U by one Douglas ADI step of size dtau.
 
     Args:
@@ -46,6 +77,8 @@ def douglas_step(ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: fl
         dtau: Step size.
         theta_adi: The ADI weight. Use 1/2 normally, and 1 for the Rannacher start-up.
         boundary_new: Dirichlet value on the s = 0 row at the new time.
+        lam: Ikonen-Toivanen multiplier from the previous step (American options only).
+            Every scheme accepts it and adds dtau*lam to its explicit predictor.
 
     The stages are (a) an explicit predictor with all of A, (b) an implicit correction
     in s, and (c) an implicit correction in v. The cost is 3 stencil sweeps plus 2
@@ -53,12 +86,12 @@ def douglas_step(ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: fl
     present (rho != 0) and 2nd order without it (with theta_adi = 1/2).
     """
     A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
-    Y0 = U + dtau * (A0U + A1U + A2U)  # (a) predict
+    Y0 = _predict(U, dtau, A0U + A1U + A2U, lam)  # (a) predict
     return _implicit_corrections(ops, Y0, theta_adi * dtau, A1U, A2U, boundary_new)  # (b) in s, (c) in v
 
 
 def craig_sneyd_step(
-    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float
+    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float, lam: np.ndarray | None = None
 ) -> np.ndarray:
     """Advance U by one Craig-Sneyd ADI step of size dtau.
 
@@ -73,14 +106,14 @@ def craig_sneyd_step(
     """
     A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
     c = theta_adi * dtau
-    Y0 = U + dtau * (A0U + A1U + A2U)
+    Y0 = _predict(U, dtau, A0U + A1U + A2U, lam)
     Y2 = _implicit_corrections(ops, Y0, c, A1U, A2U, boundary_new)
     Y0_tilde = Y0 + 0.5 * dtau * (ops.apply_A0(Y2) - A0U)
     return _implicit_corrections(ops, Y0_tilde, c, A1U, A2U, boundary_new)
 
 
 def modified_craig_sneyd_step(
-    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float
+    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float, lam: np.ndarray | None = None
 ) -> np.ndarray:
     """Advance U by one modified Craig-Sneyd ADI step of size dtau.
 
@@ -94,7 +127,7 @@ def modified_craig_sneyd_step(
     """
     A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
     c = theta_adi * dtau
-    Y0 = U + dtau * (A0U + A1U + A2U)
+    Y0 = _predict(U, dtau, A0U + A1U + A2U, lam)
     Y2 = _implicit_corrections(ops, Y0, c, A1U, A2U, boundary_new)
     A0Y2 = ops.apply_A0(Y2)
     AY2_minus_AU = (A0Y2 + ops.apply_A1(Y2) + ops.apply_A2(Y2)) - (A0U + A1U + A2U)
@@ -103,7 +136,7 @@ def modified_craig_sneyd_step(
 
 
 def hundsdorfer_verwer_step(
-    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float
+    ops: HestonOperators, U: np.ndarray, dtau: float, theta_adi: float, boundary_new: float, lam: np.ndarray | None = None
 ) -> np.ndarray:
     """Advance U by one Hundsdorfer-Verwer ADI step of size dtau.
 
@@ -117,7 +150,7 @@ def hundsdorfer_verwer_step(
     """
     A0U, A1U, A2U = ops.apply_A0(U), ops.apply_A1(U), ops.apply_A2(U)
     c = theta_adi * dtau
-    Y0 = U + dtau * (A0U + A1U + A2U)
+    Y0 = _predict(U, dtau, A0U + A1U + A2U, lam)
     Y2 = _implicit_corrections(ops, Y0, c, A1U, A2U, boundary_new)
     A1Y2, A2Y2 = ops.apply_A1(Y2), ops.apply_A2(Y2)
     Y0_tilde = Y0 + 0.5 * dtau * ((ops.apply_A0(Y2) + A1Y2 + A2Y2) - (A0U + A1U + A2U))
@@ -142,11 +175,16 @@ DEFAULT_THETA: dict[str, float] = {
 
 @dataclass(frozen=True)
 class SolveResult:
-    """The solution at tau = T on the grid, with a spline read-off."""
+    """The solution at tau = T on the grid, with a spline read-off.
+
+    For an American option, ``lam`` is the final Ikonen-Toivanen multiplier: the nodes
+    with lam > 0 form the exercise region. It is None for a European option.
+    """
 
     grid: Grid
     U: np.ndarray
     T: float
+    lam: np.ndarray | None = None
 
     @cached_property
     def _spline(self) -> RectBivariateSpline:
@@ -168,11 +206,12 @@ def solve(
     theta_adi: float | None = None,
     rannacher_half_steps: int = 2,
 ) -> SolveResult:
-    """Price a European put under Heston by marching from the payoff to tau = T.
+    """Price a European or American put under Heston by marching from the payoff to tau = T.
 
     Args:
         params: Heston parameters.
-        option: The put. American options are not supported yet (they are added in G5).
+        option: The put. For an American option, each step is followed by the pointwise
+            Ikonen-Toivanen update (``ikonen_toivanen_update``), including the start-up steps.
         grid: The space grid.
         n_steps: Number of full time steps N, so dtau = T/N.
         scheme: Name of the ADI scheme in ``SCHEMES``.
@@ -181,8 +220,6 @@ def solve(
             They replace the first rannacher_half_steps/2 full steps, which damps the
             error from the payoff kink. Must be even; 0 turns smoothing off.
     """
-    if option.american:
-        raise NotImplementedError("American constraint (Ikonen-Toivanen) is not implemented yet; see task G5")
     if scheme not in SCHEMES:
         raise ValueError(f"unknown scheme {scheme!r}; choose from {sorted(SCHEMES)}")
     if theta_adi is None:
@@ -192,13 +229,17 @@ def solve(
     step = SCHEMES[scheme]
     ops = build_heston_operators(grid, params)
     S, _ = grid.mesh()
-    U = option.payoff(S)  # row 0 holds g(0) = K, the Dirichlet value at tau = 0
+    payoff = option.payoff(S)
+    U = payoff.copy()  # row 0 holds g(0) = K, the Dirichlet value at tau = 0
+    lam = np.zeros_like(U) if option.american else None
 
     for row, (dtau, theta, boundary) in enumerate(schedule):
         step_fn = douglas_step if row < rannacher_half_steps else step  # start-up always uses Douglas
-        U = step_fn(ops, U, dtau, theta, boundary)
+        U = step_fn(ops, U, dtau, theta, boundary, lam)
+        if option.american:
+            U, lam = ikonen_toivanen_update(U, lam, payoff, dtau)
 
-    return SolveResult(grid=grid, U=U, T=option.T)
+    return SolveResult(grid=grid, U=U, T=option.T, lam=lam)
 
 
 def time_schedule(

@@ -4,7 +4,15 @@ import pytest
 from adi_heston import HestonParams, OptionSpec
 from adi_heston.fd import apply_three_point, second_derivative_weights
 from adi_heston.grid import Grid, stock_grid
-from adi_heston.reference import bs_gamma, bs_put, heston_put
+from adi_heston.reference import (
+    AMERICAN_BENCHMARK,
+    AMERICAN_BENCHMARK_OPTION,
+    AMERICAN_BENCHMARK_PARAMS,
+    AMERICAN_BENCHMARK_S0,
+    bs_gamma,
+    bs_put,
+    heston_put,
+)
 from adi_heston.solver import DEFAULT_THETA, SCHEMES, solve
 
 K, T = 100.0, 1.0
@@ -199,10 +207,9 @@ def small_problem():
     return heston_params(-0.5), Grid.build(K, 8 * K, 5.0, 20, 10)
 
 
-def test_american_not_supported_yet():
+def test_european_result_has_no_multiplier():
     p, g = small_problem()
-    with pytest.raises(NotImplementedError):
-        solve(p, OptionSpec(K, T, american=True), g, 10)
+    assert solve(p, OptionSpec(K, T), g, 10).lam is None
 
 
 @pytest.mark.parametrize("kwargs", [dict(scheme="nope"), dict(rannacher_half_steps=3), dict(rannacher_half_steps=-2)])
@@ -229,3 +236,94 @@ def test_read_off_matches_grid_value_at_a_node():
     result = solve(p, OptionSpec(K, T), g, 10)
     i, j = int(np.flatnonzero(g.s == K)[0]), 3
     assert result.price(K, g.v[j]) == pytest.approx(result.U[i, j], rel=1e-10)
+
+
+# ---- 11. American puts (Ikonen-Toivanen splitting) ------------------------------------
+
+AK = AMERICAN_BENCHMARK_OPTION.K
+
+
+def american_grid(m, n):
+    return Grid.build(AK, 8 * AK, 5.0, m, n)
+
+
+def benchmark_errors(result):
+    """Return the largest |ADI - published value| over the 10 benchmark points, for each source."""
+    errors = {}
+    for v0, sources in AMERICAN_BENCHMARK.items():
+        prices = np.array([result.price(S0, v0) for S0 in AMERICAN_BENCHMARK_S0])
+        for source, values in sources.items():
+            errors[source] = max(errors.get(source, 0.0), float(np.abs(prices - values).max()))
+    return errors
+
+
+@pytest.fixture(scope="module")
+def american_mcs():
+    """American and European benchmark solves on a 101x51 grid with Modified Craig-Sneyd."""
+    grid = american_grid(100, 50)
+    kwargs = dict(scheme="modified_craig_sneyd")
+    european = OptionSpec(AK, AMERICAN_BENCHMARK_OPTION.T)
+    return (
+        grid,
+        solve(AMERICAN_BENCHMARK_PARAMS, AMERICAN_BENCHMARK_OPTION, grid, 50, **kwargs),
+        solve(AMERICAN_BENCHMARK_PARAMS, european, grid, 50, **kwargs),
+    )
+
+
+@pytest.mark.parametrize("scheme", sorted(SCHEMES))
+def test_american_matches_published_benchmark(scheme):
+    result = solve(AMERICAN_BENCHMARK_PARAMS, AMERICAN_BENCHMARK_OPTION, american_grid(100, 50), 50, scheme=scheme)
+    errors = benchmark_errors(result)
+    assert max(errors.values()) < 1.5e-3, errors  # the sources themselves differ by up to 3e-4
+
+
+def test_american_benchmark_error_shrinks_with_refinement():
+    errors = [
+        max(benchmark_errors(solve(AMERICAN_BENCHMARK_PARAMS, AMERICAN_BENCHMARK_OPTION, american_grid(m, n), N,
+                                   scheme="modified_craig_sneyd")).values())
+        for m, n, N in ((50, 25, 25), (200, 100, 100))
+    ]
+    assert errors[1] < 6e-4 and errors[1] < errors[0] / 3
+
+
+def test_deep_in_the_money_price_is_the_intrinsic_value(american_mcs):
+    _, american, _ = american_mcs
+    assert american.price(8.0, 0.0625) == pytest.approx(2.0, abs=2e-4)  # both sources: 2.0000
+
+
+def test_american_is_at_least_payoff_and_european(american_mcs):
+    grid, american, european = american_mcs
+    S, _ = grid.mesh()
+    assert (american.U >= np.maximum(AK - S, 0.0)).all()
+    assert (american.U >= european.U - 1e-12).all()
+
+
+def test_complementarity_holds_at_every_node(american_mcs):
+    grid, american, _ = american_mcs
+    S, _ = grid.mesh()
+    assert (american.lam >= 0.0).all()
+    assert not (american.lam * (american.U - np.maximum(AK - S, 0.0))).any()
+
+
+def test_exercise_region_has_the_expected_shape(american_mcs):
+    grid, american, _ = american_mcs
+    exercise = american.lam > 0.0
+    boundary = []
+    for j in range(grid.v.size):
+        rows = np.flatnonzero(exercise[:, j])
+        assert rows.size > 0
+        # one block that starts right after the s = 0 Dirichlet row, where lam stays 0
+        np.testing.assert_array_equal(rows, np.arange(1, rows[-1] + 1))
+        boundary.append(grid.s[rows[-1]])
+    assert max(boundary) < AK  # exercising is only worthwhile below the strike
+    assert np.all(np.diff(boundary) <= 0.0)  # higher variance means waiting is worth more
+
+
+def test_american_equals_european_when_rates_are_zero():
+    # With r = 0 there is no gain from receiving the strike early, so early exercise never pays.
+    p = HestonParams(r=0.0, q=0.02, kappa=5.0, theta=0.16, xi=0.9, rho=0.1)
+    grid, kwargs = american_grid(100, 50), dict(scheme="modified_craig_sneyd")
+    american = solve(p, AMERICAN_BENCHMARK_OPTION, grid, 50, **kwargs)
+    european = solve(p, OptionSpec(AK, AMERICAN_BENCHMARK_OPTION.T), grid, 50, **kwargs)
+    assert np.abs(american.U - european.U).max() < 1e-10
+    assert not (american.lam > 0.0).any()
