@@ -1,6 +1,6 @@
 # Phase 1: Python reference solver
 
-**Status as of November 12, 2026.** This document records what the Python solver does, the design decisions behind it, and
+**Last updated November 21, 2026.** This document records what the Python solver does, the design decisions behind it, and
 how it was validated. Section 4 is the handoff to Phase 2: exactly what stays in Python and what the C++ (CPU threads)
 and CUDA (GPU) versions implement.
 
@@ -22,7 +22,7 @@ The mathematical background (the PDE, the boundary conditions and why each piece
 | `reference.py` | Independent prices: Black–Scholes (exact) and Heston (semi-analytic) | `test_reference.py` |
 | `fixtures.py` | Writes the saved Python outputs for the C++ and CUDA ports, and checks a port against them (Section 4.5) | `test_fixtures.py` |
 
-Setup is in the [README](../README.md). The whole suite is 116 tests and runs in about 4 seconds:
+Setup is in the [README](../README.md). The whole suite is 137 tests and runs in about 9 seconds:
 
 ```bash
 pytest
@@ -30,7 +30,8 @@ pytest
 
 ### What it can price now
 
-**European puts under the Heston model.** American puts are not supported yet (see Section 5).
+**European and American puts under the Heston model**, with any of the four ADI schemes: `douglas`, `craig_sneyd`,
+`modified_craig_sneyd` and `hundsdorfer_verwer`.
 
 ```python
 from adi_heston import HestonParams, OptionSpec
@@ -44,6 +45,17 @@ grid = Grid.build(K=100.0, S_max=800.0, V_max=5.0, m=100, n=50)   # 101 x 51 nod
 result = solve(params, option, grid, n_steps=100)
 result.price(S0=100.0, v0=0.04)   # 6.4198 (semi-analytic reference: 6.4259)
 result.U                          # the full solution at tau = T, shape (101, 51)
+```
+
+An American put is the same call with `american=True`. For example, on the published benchmark:
+
+```python
+from adi_heston.reference import AMERICAN_BENCHMARK_OPTION, AMERICAN_BENCHMARK_PARAMS
+
+grid = Grid.build(K=10.0, S_max=80.0, V_max=5.0, m=100, n=50)
+american = solve(AMERICAN_BENCHMARK_PARAMS, AMERICAN_BENCHMARK_OPTION, grid, n_steps=50, scheme="modified_craig_sneyd")
+american.price(S0=10.0, v0=0.0625)   # 0.5192 (published: 0.5199 and 0.5202)
+american.lam                         # the Ikonen-Toivanen multiplier; lam > 0 marks the exercise region
 ```
 
 ---
@@ -61,6 +73,9 @@ Every row below is an automated test.
 | **ADI on the Feller-failing benchmark** | Error 1.1e-2 at 101x51 and 3.0e-3 at 201x101: still about second order |
 | **Order in time** (fixed grid, step count doubled) | **2.0** for rho = 0. **0.89, 0.95, 0.98** for rho = -0.9: Douglas is first order in time when the mixed term is present, as theory predicts. |
 | **Rannacher start-up**, Gamma near K (T = 0.25, 10 steps) | Gamma error 0.44 without smoothing (larger than Gamma itself), 0.0012 with it |
+| **Craig–Sneyd, Modified Craig–Sneyd, Hundsdorfer–Verwer** | Second order in time with rho = -0.9 (measured over the grid against a 640-step run), and second order in space against the Heston reference |
+| **American puts** against the published benchmark (Ikonen & Toivanen; Zvan, Forsyth & Vetzal), 10 prices | Worst error against either source, all four schemes: 3.3e-3 at 51x26, 9.7e-4 at 101x51, 3.7e-4 at 201x101. The two sources differ from each other by up to 3e-4. |
+| **American structure** | U >= payoff and U >= European at every node; lambda >= 0 and lambda*(U - payoff) = 0 exactly; the exercise region is one block per v-line, below K, moving to lower s as v rises; with r = 0, American equals European to 6e-13 |
 | **Finite differences** on the sinh grid | Observed order about 2.0 for u', u'' and u_sv. On a deliberately jumpy grid, u'' drops to order 1.00, which confirms why the grids are smooth. |
 
 ---
@@ -276,11 +291,19 @@ close but not bit-for-bit. A float32 port would need its own, looser tolerances 
 **Evidence the files are enough.** A test (`test_fixtures.py`) implements the six kernels using only these files and
 the definitions in Section 4.3, without importing the solver. It passes every check, with errors between 0 and 2e-15.
 
-### 4.6 American options (later)
+### 4.6 American options
 
-American pricing adds one pointwise kernel after each step: the Ikonen–Toivanen fix-up, which takes the payoff array g
-and a multiplier array lambda (see `formulation.pdf`, Section 7.4). It needs no linear solve and parallelizes trivially.
-The Python version comes first.
+Following Haentjens & in 't Hout (2015, eqs. 4.1–4.4), American pricing changes two things, for every scheme and also
+for the two start-up half-steps:
+
+- **Stage (a)** adds `dtau * lam` to the explicit predictor: `Y0 = U + dtau*(A0U + A1U + A2U) + dtau*lam`. All other
+  stages are unchanged.
+- **After each step**, a pointwise update (`solver.ikonen_toivanen_update`), with that step's own `dtau`:
+  `U = max(U_bar - dtau*lam, g)` and `lam = max(0, lam + (g - U_bar)/dtau)`.
+
+The extra inputs are the payoff array `g` (equal to `U0`) and the state array `lam`, which starts at zero. The update
+needs no linear solve and parallelizes trivially. There are no American fixtures yet; they are worth adding once a port
+reaches this step.
 
 ---
 
@@ -288,11 +311,10 @@ The Python version comes first.
 
 | Item | Notes |
 |---|---|
-| **American constraint** (Ikonen–Toivanen) | `solve()` currently raises `NotImplementedError` for American options |
-| **Craig–Sneyd, Modified Craig–Sneyd, Hundsdorfer–Verwer** | Each is a new step function in `solver.SCHEMES`, built from the same six kernels. No new kernels are needed for the ports. |
-| **Greeks and exercise boundary** | `SolveResult.U` already holds the full grid needed |
+| **Greeks and exercise boundary** | `SolveResult.U` and `SolveResult.lam` already hold what is needed |
 | **Research experiments** | Strong correlation, Feller condition, exercise boundary, cost vs. accuracy |
-| **Still to verify against the papers** | The Rannacher recipe for ADI (number of half-steps), the recommended `theta_adi` for each scheme, the American put boundary conditions, and American benchmark values |
+| **Start-up steps for American options** | Haentjens & in 't Hout damp with two true backward-Euler half-steps (a full 2D solve), and only for Douglas and Craig–Sneyd. We use two Douglas half-steps with `theta_adi = 1` for every scheme, so the C++/CUDA ports need only ADI kernels. The exercise-boundary experiment will show whether this matters. |
+| **American case where the Feller condition fails** | No published reference prices exist (Haentjens & in 't Hout note this), so only self-convergence can be checked |
 
 ## 6. Observations worth keeping for the report
 
