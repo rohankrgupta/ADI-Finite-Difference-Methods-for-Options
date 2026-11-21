@@ -2,6 +2,7 @@
 
 * Black-Scholes European put and Gamma (exact formulas).
 * Heston European put (semi-analytic: one numerical integral per probability).
+* Heston American put: published benchmark values (there is no closed form).
 
 Heston's put has the same shape as Black-Scholes,
 
@@ -94,3 +95,28 @@ def heston_put(params: HestonParams, option: OptionSpec, S0: float, v0: float) -
     P1 = 0.5 + quad(integrand_P1, 0.0, np.inf, **opts)[0] / np.pi
     P2 = 0.5 + quad(integrand_P2, 0.0, np.inf, **opts)[0] / np.pi
     return float(K * np.exp(-p.r * T) * (1.0 - P2) - S0 * np.exp(-p.q * T) * (1.0 - P1))
+
+
+# ---- American put benchmark (no closed form exists) ----------------------------------
+
+# The standard test set for American puts under Heston, as tabulated by Haentjens &
+# in 't Hout (2015), Tables 2 and 3. Values by source:
+#   * Ikonen & Toivanen, "Operator splitting methods for pricing American options under
+#     stochastic volatility", Numer. Math. 113 (2009) 299-324, Table 1;
+#   * Zvan, Forsyth & Vetzal, "Penalty methods for American options with stochastic
+#     volatility", J. Comp. Appl. Math. 91 (1998) 199-218, Table 2.
+# The two sources differ by up to 3e-4 and are themselves numerical, so agreement can
+# only be expected to about 1e-3. The Feller condition holds for this parameter set.
+AMERICAN_BENCHMARK_PARAMS = HestonParams(r=0.1, q=0.0, kappa=5.0, theta=0.16, xi=0.9, rho=0.1)
+AMERICAN_BENCHMARK_OPTION = OptionSpec(K=10.0, T=0.25, american=True)
+AMERICAN_BENCHMARK_S0 = (8.0, 9.0, 10.0, 11.0, 12.0)
+AMERICAN_BENCHMARK = {  # v0 -> source -> prices at S0 = 8, 9, 10, 11, 12
+    0.0625: {
+        "ikonen_toivanen": (2.0000, 1.1076, 0.5199, 0.2135, 0.0820),
+        "zvan_forsyth_vetzal": (2.0000, 1.1076, 0.5202, 0.2138, 0.0821),
+    },
+    0.25: {
+        "ikonen_toivanen": (2.0785, 1.3336, 0.7959, 0.4482, 0.2427),
+        "zvan_forsyth_vetzal": (2.0784, 1.3337, 0.7961, 0.4483, 0.2428),
+    },
+}
