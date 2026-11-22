@@ -12,6 +12,7 @@ solver with C++ multithreading and CUDA, and compare their performance.
 - Proposal: [`docs/proposal.pdf`](docs/proposal.pdf)
 - Problem formulation (the PDE, boundary conditions and discretization): [`docs/formulation.pdf`](docs/formulation.pdf)
 - Phase 1 summary, design decisions and the Phase 2 handoff: [`docs/phase1_summary.md`](docs/phase1_summary.md)
+- C++ multithreaded port (build, check, benchmark): [`cpp/README.md`](cpp/README.md)
 
 ## Setup
 

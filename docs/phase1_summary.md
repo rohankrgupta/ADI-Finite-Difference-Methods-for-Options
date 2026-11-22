@@ -260,6 +260,7 @@ with a single `fread` into a `double` buffer. Each case folder also has a `meta.
 | `a1.bin`, `a2.bin`, `a0_coef.bin`, `w_s.bin`, `w_v.bin` | operator inputs (Section 4.2) |
 | `U0.bin`, `schedule.bin` | starting values, and the step schedule as rows of (dtau, theta_adi, boundary) |
 | `kernel_input.bin` | one fixed test array fed to every kernel |
+| `scalars.bin` | the four numbers a port needs from `meta.json`, so it never parses JSON: `[solve_c, dtau, theta_adi, boundary]`, the last three being the single Douglas step's arguments |
 | `apply_A0.bin`, `apply_A1.bin`, `apply_A2.bin` | expected kernel outputs on `kernel_input` |
 | `solve_A1.bin`, `solve_A2.bin` | expected solves with right-hand side `kernel_input` and `c = meta["solve_c"]` |
 | `douglas_step.bin` | one step from `kernel_input`, with the arguments in `meta["douglas_step_args"]` |
@@ -287,6 +288,8 @@ The exit code is 1 if anything fails.
 **Tolerances** (double precision): **1e-12** for each kernel and for `douglas_step`, and **1e-10** for `U_final`.
 The algorithm is the same, but compilers reorder arithmetic and use fused multiply-add instructions, so agreement is
 close but not bit-for-bit. A float32 port would need its own, looser tolerances (about 1e-5).
+
+**The C++ port** (`cpp/`, see [`cpp/README.md`](../cpp/README.md)) passes every check on `tiny`, `small` and `medium` bit for bit (relative error 0) at 1 to 10 threads. Large benchmark grids get inputs only: `python -m adi_heston.fixtures generate --grid M N STEPS` writes them to `bench_inputs/`.
 
 **Evidence the files are enough.** A test (`test_fixtures.py`) implements the six kernels using only these files and
 the definitions in Section 4.3, without importing the solver. It passes every check, with errors between 0 and 2e-15.
