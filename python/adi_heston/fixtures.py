@@ -9,12 +9,19 @@ Each test case is a folder of raw arrays plus one ``meta.json``:
   JSON: [solve_c, dtau, theta_adi, boundary], the last three being the arguments of
   the single Douglas step.
 
+The base cases (tiny, small, medium) use the Douglas scheme for a European put and also
+check the six kernels one by one. The variant cases (small_<scheme> and
+small_american_<scheme>) check one step and the full run of each scheme, European and
+American. They add ``settings.bin`` = [scheme id, american (0 or 1), start-up half-steps],
+with scheme ids from ``SCHEME_IDS``. American cases also add ``lam_input.bin``, the
+multiplier fed to the one-step check. ``meta.json`` lists each case's outputs.
+
 A port writes its outputs into its own folder, using the same file names and format.
 ``check`` then compares them with the Python outputs. Outputs the port has not
 produced yet are reported as "not provided", not as failures.
 
 Usage:
-    python -m adi_heston.fixtures generate [--case tiny small medium] [--out DIR]
+    python -m adi_heston.fixtures generate [--case tiny small medium small_craig_sneyd ...] [--out DIR]
     python -m adi_heston.fixtures generate --grid M N STEPS [--out DIR]   # inputs only, for benchmarks
     python -m adi_heston.fixtures check CASE_DIR PORT_OUTPUT_DIR
 """
@@ -32,7 +39,7 @@ import numpy as np
 from .grid import Grid
 from .operators import build_heston_operators, dirichlet_value
 from .params import HestonParams, OptionSpec
-from .solver import douglas_step, solve, time_schedule
+from .solver import DEFAULT_THETA, SCHEMES, douglas_step, ikonen_toivanen_update, solve, time_schedule
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DIR = REPO_ROOT / "fixtures"
@@ -46,14 +53,30 @@ RANNACHER_HALF_STEPS = 2
 CASES = {"tiny": (5, 4, 4), "small": (20, 10, 20), "medium": (100, 50, 50)}  # (m, n, n_steps)
 
 KERNEL_OUTPUTS = ["apply_A0", "apply_A1", "apply_A2", "solve_A1", "solve_A2", "douglas_step"]
-OUTPUTS = KERNEL_OUTPUTS + ["U_final"]
-TOLERANCES = {**{name: 1e-12 for name in KERNEL_OUTPUTS}, "U_final": 1e-10}
+OUTPUTS = KERNEL_OUTPUTS + ["U_final"]  # outputs of the base cases
+
+# Variant cases: name -> (base case, scheme, american).
+SCHEME_IDS = {"douglas": 0, "craig_sneyd": 1, "modified_craig_sneyd": 2, "hundsdorfer_verwer": 3}
+VARIANTS = {f"small_{s}": ("small", s, False) for s in ("craig_sneyd", "modified_craig_sneyd", "hundsdorfer_verwer")}
+VARIANTS |= {f"small_american_{s}": ("small", s, True) for s in SCHEME_IDS}
+
+TOLERANCES = {
+    **{name: 1e-12 for name in KERNEL_OUTPUTS + ["step", "step_lam"]},
+    "U_final": 1e-10,
+    "lam_final": 1e-10,
+}
 
 
 def kernel_input(shape: tuple[int, int]) -> np.ndarray:
     """Return the fixed test array fed to every kernel. It uses formulas only (no random numbers), so it is reproducible anywhere."""
     i, j = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
     return np.sin(0.37 * i + 0.11 * j) + 0.5 * np.cos(0.23 * i - 0.17 * j)
+
+
+def lam_input(shape: tuple[int, int]) -> np.ndarray:
+    """Return the fixed, non-negative multiplier fed to the one-step check of American cases."""
+    i, j = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing="ij")
+    return 0.5 * (1.0 + np.sin(0.29 * i + 0.07 * j))
 
 
 def _write(path: Path, array: np.ndarray) -> list[int]:
@@ -65,7 +88,7 @@ def _write(path: Path, array: np.ndarray) -> list[int]:
 FORMAT = "float64, little-endian, row-major (C order), no header"
 
 
-def _time_loop_inputs(m: int, n: int, n_steps: int):
+def _time_loop_inputs(m: int, n: int, n_steps: int, option: OptionSpec = OPTION, theta_adi: float = 0.5):
     """Return (grid, operators, input arrays of the time loop) for the test problem on an (m+1) x (n+1) grid."""
     grid = Grid.build(K=OPTION.K, S_max=S_MAX, V_max=V_MAX, m=m, n=n)
     ops = build_heston_operators(grid, PARAMS)
@@ -77,7 +100,7 @@ def _time_loop_inputs(m: int, n: int, n_steps: int):
         "w_s": ops.w_s,
         "w_v": ops.w_v,
         "U0": OPTION.payoff(S),
-        "schedule": time_schedule(PARAMS, OPTION, n_steps, rannacher_half_steps=RANNACHER_HALF_STEPS),
+        "schedule": time_schedule(PARAMS, option, n_steps, theta_adi, rannacher_half_steps=RANNACHER_HALF_STEPS),
     }
     return grid, ops, inputs
 
@@ -97,6 +120,8 @@ def _problem_meta(m: int, n: int, n_steps: int) -> dict:
 
 def generate(case: str, out_dir: Path = DEFAULT_DIR) -> Path:
     """Write all input and expected-output files for ``case`` into ``out_dir/case`` and return that folder."""
+    if case in VARIANTS:
+        return _generate_variant(case, out_dir)
     m, n, n_steps = CASES[case]
     folder = Path(out_dir) / case
     folder.mkdir(parents=True, exist_ok=True)
@@ -129,7 +154,53 @@ def generate(case: str, out_dir: Path = DEFAULT_DIR) -> Path:
         "douglas_step_args": step_args,
         "shapes": shapes,
         "outputs": OUTPUTS,
-        "tolerances": TOLERANCES,
+        "tolerances": {name: TOLERANCES[name] for name in OUTPUTS},
+    }
+    (folder / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    return folder
+
+
+def _generate_variant(case: str, out_dir: Path) -> Path:
+    """Write a variant case: one step and the full run of one scheme, European or American."""
+    base, scheme, american = VARIANTS[case]
+    m, n, n_steps = CASES[base]
+    folder = Path(out_dir) / case
+    folder.mkdir(parents=True, exist_ok=True)
+
+    option = OptionSpec(K=OPTION.K, T=OPTION.T, american=american)
+    theta = DEFAULT_THETA[scheme]
+    grid, ops, inputs = _time_loop_inputs(m, n, n_steps, option, theta)
+    X = kernel_input(grid.shape)
+    dtau = OPTION.T / n_steps
+    step_args = {"dtau": dtau, "theta_adi": theta, "boundary": dirichlet_value(PARAMS, option, dtau)}
+
+    arrays = {
+        **inputs,
+        "kernel_input": X,
+        "scalars": np.array([theta * dtau, dtau, theta, step_args["boundary"]]),
+        "settings": np.array([SCHEME_IDS[scheme], float(american), RANNACHER_HALF_STEPS]),
+    }
+    result = solve(PARAMS, option, grid, n_steps, scheme=scheme, rannacher_half_steps=RANNACHER_HALF_STEPS)
+    if american:
+        lam0 = lam_input(grid.shape)
+        U_bar = SCHEMES[scheme](ops, X, dtau, theta, step_args["boundary"], lam0)
+        step_U, step_lam = ikonen_toivanen_update(U_bar, lam0, inputs["U0"], dtau)
+        arrays |= {"lam_input": lam0, "step": step_U, "step_lam": step_lam, "U_final": result.U, "lam_final": result.lam}
+        outputs = ["step", "step_lam", "U_final", "lam_final"]
+    else:
+        arrays |= {"step": SCHEMES[scheme](ops, X, dtau, theta, step_args["boundary"]), "U_final": result.U}
+        outputs = ["step", "U_final"]
+    shapes = {name: _write(folder / f"{name}.bin", a) for name, a in arrays.items()}
+    meta = {
+        "format": FORMAT,
+        "case": case,
+        "scheme": scheme,
+        "american": american,
+        **_problem_meta(m, n, n_steps),
+        "step_args": step_args,
+        "shapes": shapes,
+        "outputs": outputs,
+        "tolerances": {name: TOLERANCES[name] for name in outputs},
     }
     (folder / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     return folder
@@ -164,8 +235,9 @@ def check(case_dir: Path, port_dir: Path) -> tuple[bool, list[tuple[str, str, fl
     PASS, FAIL or "not provided". ok is False only if some output FAILs.
     """
     case_dir, port_dir = Path(case_dir), Path(port_dir)
+    outputs = json.loads((case_dir / "meta.json").read_text()).get("outputs", OUTPUTS)
     rows = []
-    for name in OUTPUTS:
+    for name in outputs:
         expected = load(case_dir, name)
         path = port_dir / f"{name}.bin"
         if not path.exists():
@@ -185,7 +257,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m adi_heston.fixtures", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     gen = sub.add_parser("generate", help="write the Python reference files")
-    gen.add_argument("--case", nargs="+", choices=sorted(CASES), default=["tiny", "small"])
+    gen.add_argument("--case", nargs="+", choices=sorted(CASES) + sorted(VARIANTS), default=["tiny", "small", *VARIANTS])
     gen.add_argument("--grid", nargs=3, type=int, metavar=("M", "N", "STEPS"),
                      help="write inputs only for an (M+1) x (N+1) grid into bench_inputs/")
     gen.add_argument("--out", type=Path, default=None)

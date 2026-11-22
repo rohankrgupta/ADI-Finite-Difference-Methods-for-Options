@@ -143,7 +143,7 @@ def test_command_line_check_exit_codes(tmp_path, small_case, capsys):
 # ---- the committed files ----------------------------------------------------------
 
 
-@pytest.mark.parametrize("case", ["tiny", "small"])
+@pytest.mark.parametrize("case", ["tiny", "small", *sorted(fixtures.VARIANTS)])
 def test_committed_fixtures_are_up_to_date(tmp_path, case):
     """If a Python kernel changes, this fails until the fixtures are regenerated."""
     fresh = generate(case, tmp_path)
@@ -184,3 +184,23 @@ def test_inputs_only_generator_writes_the_time_loop_inputs(tmp_path):
     for name in ("a1", "a2", "a0_coef", "w_s", "w_v", "U0", "schedule"):
         np.testing.assert_array_equal(load(folder, name), load(reference, name))
     assert not (folder / "U_final.bin").exists()
+
+
+def test_variant_case_settings_and_outputs(tmp_path):
+    folder = generate("small_american_hundsdorfer_verwer", tmp_path)
+    meta = json.loads((folder / "meta.json").read_text())
+    np.testing.assert_array_equal(np.fromfile(folder / "settings.bin", dtype="<f8"), [3.0, 1.0, 2.0])
+    assert meta["outputs"] == ["step", "step_lam", "U_final", "lam_final"]
+    lam = load(folder, "lam_final")
+    assert (lam >= 0.0).all() and (lam > 0.0).any()  # an exercise region exists
+    assert (load(folder, "U_final") >= load(folder, "U0")).all()  # never below the payoff
+
+
+def test_check_uses_each_cases_own_output_list(tmp_path):
+    folder = generate("small_craig_sneyd", tmp_path / "cases")
+    port = tmp_path / "port"
+    port.mkdir()
+    shutil.copy(folder / "step.bin", port / "step.bin")
+    ok, rows = check(folder, port)
+    assert ok
+    assert [(name, status) for name, status, _ in rows] == [("step", "PASS"), ("U_final", "not provided")]

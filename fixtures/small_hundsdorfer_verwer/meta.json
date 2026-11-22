@@ -1,0 +1,88 @@
+{
+  "format": "float64, little-endian, row-major (C order), no header",
+  "case": "small_hundsdorfer_verwer",
+  "scheme": "hundsdorfer_verwer",
+  "american": false,
+  "m": 20,
+  "n": 10,
+  "n_steps": 20,
+  "rannacher_half_steps": 2,
+  "params": {
+    "r": 0.025,
+    "q": 0.01,
+    "kappa": 1.5,
+    "theta": 0.04,
+    "xi": 0.3,
+    "rho": -0.9
+  },
+  "option": {
+    "K": 100.0,
+    "T": 1.0,
+    "american": false
+  },
+  "S_max": 800.0,
+  "V_max": 5.0,
+  "step_args": {
+    "dtau": 0.05,
+    "theta_adi": 0.7886751345948129,
+    "boundary": 99.8750780924581
+  },
+  "shapes": {
+    "a1": [
+      3,
+      21,
+      11
+    ],
+    "a2": [
+      3,
+      21,
+      11
+    ],
+    "a0_coef": [
+      21,
+      11
+    ],
+    "w_s": [
+      21,
+      3
+    ],
+    "w_v": [
+      11,
+      3
+    ],
+    "U0": [
+      21,
+      11
+    ],
+    "schedule": [
+      21,
+      3
+    ],
+    "kernel_input": [
+      21,
+      11
+    ],
+    "scalars": [
+      4
+    ],
+    "settings": [
+      3
+    ],
+    "step": [
+      21,
+      11
+    ],
+    "U_final": [
+      21,
+      11
+    ]
+  },
+  "outputs": [
+    "step",
+    "U_final"
+  ],
+  "tolerances": {
+    "step": 1e-12,
+    "U_final": 1e-10
+  }
+}

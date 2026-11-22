@@ -13,6 +13,6 @@ The file format, the contents of each case and the tolerances are described in
 To regenerate these files (needed whenever a Python kernel changes):
 
 ```bash
-python -m adi_heston.fixtures generate                 # tiny and small (committed)
+python -m adi_heston.fixtures generate                 # tiny, small and the 7 variant cases (committed)
 python -m adi_heston.fixtures generate --case medium   # not committed
 ```
