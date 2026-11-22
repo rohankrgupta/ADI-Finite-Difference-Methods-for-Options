@@ -164,3 +164,23 @@ def test_schedule_matches_rannacher_start_up(small_case):
     np.testing.assert_allclose(sched[2:, :2], np.tile([dtau, 0.5], (meta["n_steps"] - 1, 1)))
     assert sched[:, 0].sum() == pytest.approx(meta["option"]["T"])
     assert np.allclose(sched[:, 0] * sched[:, 1], dtau / 2)  # the same c in every step
+
+
+def test_scalars_file_repeats_the_meta_values(small_case):
+    meta = json.loads((small_case / "meta.json").read_text())
+    args = meta["douglas_step_args"]
+    np.testing.assert_array_equal(
+        np.fromfile(small_case / "scalars.bin", dtype="<f8"),
+        [meta["solve_c"], args["dtau"], args["theta_adi"], args["boundary"]],
+    )
+
+
+def test_inputs_only_generator_writes_the_time_loop_inputs(tmp_path):
+    from adi_heston.fixtures import generate_inputs
+
+    folder = generate_inputs(20, 10, 20, tmp_path)
+    assert folder.name == "grid_21x11_N20"
+    reference = generate("small", tmp_path / "cases")  # same problem and size as the small case
+    for name in ("a1", "a2", "a0_coef", "w_s", "w_v", "U0", "schedule"):
+        np.testing.assert_array_equal(load(folder, name), load(reference, name))
+    assert not (folder / "U_final.bin").exists()

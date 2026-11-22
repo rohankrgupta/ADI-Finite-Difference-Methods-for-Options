@@ -28,3 +28,6 @@ cmake-build-*/
 
 # Generated test outputs that are not committed (regenerate with: python -m adi_heston.fixtures generate --case medium)
 fixtures/medium/
+
+# Benchmark inputs for large grids (regenerate with: python -m adi_heston.fixtures generate --grid M N STEPS)
+bench_inputs/
