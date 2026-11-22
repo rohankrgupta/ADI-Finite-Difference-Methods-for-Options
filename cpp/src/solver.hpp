@@ -1,4 +1,4 @@
-// Threads and the Douglas time loop.
+// Threads and the ADI time loop.
 //
 // A team of std::jthread workers is created once per run. Each worker owns a fixed block
 // of rows and a fixed block of columns. A std::barrier separates the phases whose data
@@ -20,6 +20,9 @@ struct Step {
     double theta_adi;
     double boundary;  // Dirichlet value on the s = 0 row at the end of the step
 };
+
+// The four ADI schemes, numbered as in python/adi_heston/fixtures.py (SCHEME_IDS).
+enum class Scheme { douglas = 0, craig_sneyd = 1, modified_craig_sneyd = 2, hundsdorfer_verwer = 3 };
 
 // The grid lines a worker owns: rows [row_begin, row_end) and columns [col_begin, col_end).
 struct Block {
@@ -50,19 +53,30 @@ void run_team(std::size_t threads, std::size_t rows, std::size_t cols, Body body
     }
 }  // the jthreads join here
 
-// Runs the Douglas time loop; the work arrays are allocated once and reused by every step.
-class DouglasSolver {
+// Runs the ADI time loop of one scheme; the work arrays are allocated once and reused by every step.
+//
+// Douglas takes 3 phases per step. Craig-Sneyd, Modified Craig-Sneyd and Hundsdorfer-Verwer
+// keep the Douglas result as Y2 and add a correction plus a second pair of solves: 6 phases.
+// The first `startup_half_steps` rows of every schedule (the Rannacher start-up) always use Douglas.
+class AdiSolver {
 public:
-    DouglasSolver(const Operators& op, std::size_t threads);
+    AdiSolver(const Operators& op, std::size_t threads, Scheme scheme = Scheme::douglas,
+              std::size_t startup_half_steps = 0);
 
-    // Advance `solution` (in place) through every step of the schedule. Returns the seconds
-    // spent in the loop, measured by worker 0 between barriers, so thread start-up is excluded.
-    double run(std::vector<double>& solution, const std::vector<Step>& schedule);
+    // Advance `solution` in place through every step of the schedule. For an American option,
+    // pass the payoff and the multiplier `lam` (updated in place); for a European option, pass
+    // nullptr for both. Returns the seconds spent in the loop, measured by worker 0 between
+    // barriers, so thread start-up is excluded.
+    double run(std::vector<double>& solution, const std::vector<Step>& schedule, const double* payoff = nullptr,
+               double* lam = nullptr);
 
 private:
     const Operators& op_;
     std::size_t threads_;
-    std::vector<double> A0U_, A1U_, A2U_, R_, Y1_;
+    Scheme scheme_;
+    std::size_t startup_half_steps_;
+    std::vector<double> A0U_, A1U_, A2U_, R_, Y1_;  // every scheme
+    std::vector<double> Y0_, Y2_, A0Y2_, A1Y2_, A2Y2_;  // corrected schemes only
 };
 
 }  // namespace adi

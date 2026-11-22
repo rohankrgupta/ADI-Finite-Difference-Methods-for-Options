@@ -146,4 +146,13 @@ void solve_A2(const Operators& op, double c, const double* R, double* X, std::si
     }
 }
 
+void ikonen_toivanen_update(const Operators& op, double* U, double* lam, const double* payoff, double dtau,
+                            std::size_t row_begin, std::size_t row_end) {
+    for (std::size_t k = row_begin * op.cols; k < row_end * op.cols; ++k) {
+        const double u_bar = U[k];
+        U[k] = std::max(u_bar - dtau * lam[k], payoff[k]);
+        lam[k] = std::max(0.0, lam[k] + (payoff[k] - u_bar) / dtau);
+    }
+}
+
 }  // namespace adi::kernels

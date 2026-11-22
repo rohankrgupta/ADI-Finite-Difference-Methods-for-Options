@@ -57,5 +57,11 @@ void solve_A1(const Operators& op, double c, const double* R, double* X, std::si
 void solve_A2(const Operators& op, double c, const double* R, double* X, std::size_t row_begin, std::size_t row_end,
               double* c_star, double* d_star);
 
+// The pointwise Ikonen-Toivanen update for American options on rows [row_begin, row_end),
+// applied after a step that produced U (Python: solver.ikonen_toivanen_update):
+//     U = max(U - dtau*lam, payoff),   lam = max(0, lam + (payoff - U_before)/dtau)
+void ikonen_toivanen_update(const Operators& op, double* U, double* lam, const double* payoff, double dtau,
+                            std::size_t row_begin, std::size_t row_end);
+
 }  // namespace kernels
 }  // namespace adi

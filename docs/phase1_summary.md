@@ -275,6 +275,19 @@ K = 100, T = 1, S_max = 800, V_max = 5.
 | `small` | 21 x 11 | 20 | yes; the main check |
 | `medium` | 101 x 51 | 50 | no; generate with `python -m adi_heston.fixtures generate --case medium` |
 
+The base cases above use the Douglas scheme for a European put and check the six kernels. **Variant cases**
+check one step (`step.bin`) and the full run (`U_final.bin`) of each other scheme, and of all four schemes
+for an American put (adding `step_lam.bin` and `lam_final.bin`). They use the `small` grid and are committed:
+
+| Cases | Contents |
+|---|---|
+| `small_craig_sneyd`, `small_modified_craig_sneyd`, `small_hundsdorfer_verwer` | European put |
+| `small_american_douglas`, `small_american_craig_sneyd`, `small_american_modified_craig_sneyd`, `small_american_hundsdorfer_verwer` | American put; `lam_input.bin` is the multiplier fed to the one-step check |
+
+Each variant folder is self-contained (it repeats the operator files) and adds `settings.bin` =
+`[scheme id, american (0 or 1), start-up half-steps]`, with scheme ids 0 Douglas, 1 Craig–Sneyd,
+2 Modified Craig–Sneyd, 3 Hundsdorfer–Verwer. Its `meta.json` lists its outputs, and `check` compares exactly those.
+
 **Checking a port.** The port writes its outputs into a folder, using the same file names and format. Then:
 
 ```bash
@@ -289,7 +302,7 @@ The exit code is 1 if anything fails.
 The algorithm is the same, but compilers reorder arithmetic and use fused multiply-add instructions, so agreement is
 close but not bit-for-bit. A float32 port would need its own, looser tolerances (about 1e-5).
 
-**The C++ port** (`cpp/`, see [`cpp/README.md`](../cpp/README.md)) passes every check on `tiny`, `small` and `medium` bit for bit (relative error 0) at 1 to 10 threads. Large benchmark grids get inputs only: `python -m adi_heston.fixtures generate --grid M N STEPS` writes them to `bench_inputs/`.
+**The C++ port** (`cpp/`, see [`cpp/README.md`](../cpp/README.md)) passes every check on all ten cases, base and variant, bit for bit (relative error 0) at 1 to 16 threads. Large benchmark grids get inputs only: `python -m adi_heston.fixtures generate --grid M N STEPS` writes them to `bench_inputs/`.
 
 **Evidence the files are enough.** A test (`test_fixtures.py`) implements the six kernels using only these files and
 the definitions in Section 4.3, without importing the solver. It passes every check, with errors between 0 and 2e-15.
@@ -305,8 +318,8 @@ for the two start-up half-steps:
   `U = max(U_bar - dtau*lam, g)` and `lam = max(0, lam + (g - U_bar)/dtau)`.
 
 The extra inputs are the payoff array `g` (equal to `U0`) and the state array `lam`, which starts at zero. The update
-needs no linear solve and parallelizes trivially. There are no American fixtures yet; they are worth adding once a port
-reaches this step.
+needs no linear solve and parallelizes trivially. The C++ port implements it (`kernels::ikonen_toivanen_update`),
+and the `small_american_*` cases check it.
 
 ---
 

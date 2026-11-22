@@ -1,9 +1,12 @@
-// adi_port: the C++ multithreaded port of the Douglas ADI time loop.
+// adi_port: the C++ multithreaded port of the ADI time loop (four schemes, European and American).
 //
 //   adi_port CASE_DIR OUT_DIR [--threads T]
-//       Check mode. Reads a fixture case, runs the six kernels on kernel_input and the
-//       full time loop from U0, and writes the seven outputs for
-//       `python -m adi_heston.fixtures check CASE_DIR OUT_DIR`.
+//       Check mode. Reads a fixture case and writes its outputs for
+//       `python -m adi_heston.fixtures check CASE_DIR OUT_DIR`:
+//       - a base case (Douglas, European): the six kernels on kernel_input, one Douglas
+//         step, and the full time loop from U0;
+//       - a variant case (it has settings.bin): one step and the full time loop of its
+//         scheme, plus the multiplier lam for an American option.
 //
 //   adi_port INPUTS_DIR --bench [--threads T] [--repeats R]
 //       Benchmark mode. Runs the time loop once to warm up, then R timed runs, and prints
@@ -55,14 +58,53 @@ std::vector<double> load_grid_array(const fs::path& path, const Operators& op) {
     return values;
 }
 
+// settings.bin = [scheme id, american (0 or 1), start-up half-steps]; see python/adi_heston/fixtures.py.
+void check_variant(const fs::path& case_dir, const fs::path& out_dir, std::size_t threads, const Operators& op) {
+    const std::vector<double> settings = adi::read_bin(case_dir / "settings.bin");
+    if (settings.size() != 3) throw std::runtime_error("settings.bin must hold 3 values");
+    if (settings[0] < 0.0 || settings[0] > 3.0) throw std::runtime_error("settings.bin: scheme id must be 0 to 3");
+    const auto scheme = static_cast<adi::Scheme>(static_cast<int>(settings[0]));
+    const bool american = settings[1] != 0.0;
+    const auto startup_half_steps = static_cast<std::size_t>(settings[2]);
+
+    const std::vector<double> payoff = load_grid_array(case_dir / "U0.bin", op);
+    const std::vector<double> scalars = adi::read_bin(case_dir / "scalars.bin");  // [c, dtau, theta, boundary]
+    if (scalars.size() != 4) throw std::runtime_error("scalars.bin must hold 4 values");
+
+    std::vector<double> U, lam;  // lam stays empty for a European option
+    const auto run = [&](adi::AdiSolver& solver, const std::vector<adi::Step>& schedule) {
+        solver.run(U, schedule, american ? payoff.data() : nullptr, american ? lam.data() : nullptr);
+    };
+
+    // One step of the scheme from kernel_input (no start-up), then the American update if any.
+    adi::AdiSolver one_step(op, threads, scheme);
+    U = load_grid_array(case_dir / "kernel_input.bin", op);
+    if (american) lam = load_grid_array(case_dir / "lam_input.bin", op);
+    run(one_step, {adi::Step{scalars[1], scalars[2], scalars[3]}});
+    adi::write_bin(out_dir / "step.bin", U);
+    if (american) adi::write_bin(out_dir / "step_lam.bin", lam);
+
+    // The full time loop from the payoff, with the Rannacher start-up.
+    adi::AdiSolver full_run(op, threads, scheme, startup_half_steps);
+    U = payoff;
+    if (american) lam.assign(op.size(), 0.0);
+    run(full_run, load_schedule(case_dir));
+    adi::write_bin(out_dir / "U_final.bin", U);
+    if (american) adi::write_bin(out_dir / "lam_final.bin", lam);
+}
+
 void check_mode(const fs::path& case_dir, const fs::path& out_dir, std::size_t threads) {
     const Operators op = load_operators(case_dir);
+    fs::create_directories(out_dir);
+    if (fs::exists(case_dir / "settings.bin")) {
+        check_variant(case_dir, out_dir, threads, op);
+        return;
+    }
     const std::vector<double> X = load_grid_array(case_dir / "kernel_input.bin", op);
     const std::vector<double> scalars = adi::read_bin(case_dir / "scalars.bin");
     if (scalars.size() != 4) throw std::runtime_error("scalars.bin must hold 4 values");
     const double solve_c = scalars[0];
     const adi::Step one_step{scalars[1], scalars[2], scalars[3]};
-    fs::create_directories(out_dir);
 
     // Single kernels on kernel_input, through the same row and column blocks as the time loop.
     std::vector<double> A0X(op.size()), A1X(op.size()), A2X(op.size()), solved_A1(op.size()), solved_A2(op.size());
@@ -82,7 +124,7 @@ void check_mode(const fs::path& case_dir, const fs::path& out_dir, std::size_t t
     adi::write_bin(out_dir / "solve_A1.bin", solved_A1);
     adi::write_bin(out_dir / "solve_A2.bin", solved_A2);
 
-    adi::DouglasSolver solver(op, threads);
+    adi::AdiSolver solver(op, threads);
     std::vector<double> after_one_step = X;
     solver.run(after_one_step, {one_step});
     adi::write_bin(out_dir / "douglas_step.bin", after_one_step);
@@ -96,7 +138,7 @@ void bench_mode(const fs::path& dir, std::size_t threads, std::size_t repeats) {
     const Operators op = load_operators(dir);
     const std::vector<double> U0 = load_grid_array(dir / "U0.bin", op);
     const std::vector<adi::Step> schedule = load_schedule(dir);
-    adi::DouglasSolver solver(op, threads);
+    adi::AdiSolver solver(op, threads);
 
     std::vector<double> ms_per_step;
     for (std::size_t run = 0; run <= repeats; ++run) {  // run 0 is the warm-up
