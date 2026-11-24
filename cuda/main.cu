@@ -3,8 +3,9 @@
 //
 //   adi_cuda CASE_DIR OUT_DIR
 //       Check mode: reads a fixture case and writes its outputs for
-//       `python -m adi_heston.fixtures check CASE_DIR OUT_DIR`.
-//       So far (stage 2) it only round-trips U0 and A2 through device memory.
+//       `python -m adi_heston.fixtures check CASE_DIR OUT_DIR` and
+//       scripts/check_cuda.py. So far: apply_A0/A1/A2 on kernel_input, and
+//       k1_R1 / k1_A2U (the explicit stage K1 with the one-step arguments).
 //   adi_cuda INPUTS_DIR --bench
 //       Benchmark mode (not implemented yet).
 //
@@ -16,11 +17,13 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "host/io.hpp"
 #include "kernels/common.cuh"
+#include "kernels/kernels.cuh"
 
 namespace fs = std::filesystem;
 
@@ -38,19 +41,47 @@ void print_device() {
                  prop.multiProcessorCount, prop.major, prop.minor, runtime / 1000, (runtime % 1000) / 10);
 }
 
-// Stage 2: send U0 and the compressed A2 through device memory and back, to test loading and buffers.
+void write_device(const fs::path& path, const adi::DeviceBuffer<adi::real>& buffer) {
+    std::vector<double> host;
+    buffer.download(host);
+    adi::write_bin(path, host);
+}
+
 void check_mode(const fs::path& case_dir, const fs::path& out_dir) {
     const adi::HostProblem problem = adi::load_case(case_dir);
+    if (problem.kernel_input.empty() || problem.scalars.size() != 4) {
+        throw std::runtime_error(case_dir.string() + " is not a fixture case (no kernel_input.bin or scalars.bin)");
+    }
     fs::create_directories(out_dir);
-    std::vector<double> back;
+    const std::size_t n = problem.size();
+    const adi::DeviceOperators ops(problem);
+    const adi::OperatorView op = ops.view();
+    const adi::DeviceBuffer<adi::real> X(problem.kernel_input);
 
-    const adi::DeviceBuffer<adi::real> U(problem.U0);
-    U.download(back);
-    adi::write_bin(out_dir / "roundtrip_U0.bin", back);
+    // Single kernels on kernel_input.
+    adi::DeviceBuffer<adi::real> A0X(n), A1X(n), A2X(n);
+    adi::launch_apply_probe(op, X.data(), A0X.data(), A1X.data(), A2X.data(), nullptr);
+    write_device(out_dir / "apply_A0.bin", A0X);
+    write_device(out_dir / "apply_A1.bin", A1X);
+    write_device(out_dir / "apply_A2.bin", A2X);
 
-    const adi::DeviceBuffer<adi::real> a2(problem.a2);
-    a2.download(back);
-    adi::write_bin(out_dir / "roundtrip_a2.bin", back);
+    // K1 on kernel_input with the one-step arguments [solve_c, dtau, theta_adi, boundary], plus
+    // lam_input in an American case.
+    const double dtau = problem.scalars[1], theta = problem.scalars[2], boundary = problem.scalars[3];
+    adi::DeviceBuffer<adi::real> lam;
+    if (!problem.lam_input.empty()) lam = adi::DeviceBuffer<adi::real>(problem.lam_input);
+    adi::DeviceBuffer<adi::real> R1(n), A2U(n);
+    adi::ExplicitStageArgs args{};
+    args.U = X.data();
+    args.lam = lam.size() > 0 ? lam.data() : nullptr;
+    args.R1 = R1.data();
+    args.A2U = A2U.data();
+    args.dtau = dtau;
+    args.c = theta * dtau;
+    args.boundary = boundary;
+    adi::launch_explicit_stage(op, args, nullptr);
+    write_device(out_dir / "k1_R1.bin", R1);
+    write_device(out_dir / "k1_A2U.bin", A2U);
 }
 
 [[noreturn]] void usage() {

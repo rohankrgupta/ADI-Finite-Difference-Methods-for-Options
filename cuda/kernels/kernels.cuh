@@ -1,0 +1,139 @@
+// -----------------------------------------------------------------------------
+// The operator split A = A0 + A1 + A2 on the GPU: device copies of the
+// coefficients, per-node stencils, and the host functions that launch the
+// building-block kernels.
+//
+// Layout: row-major, node (i, j) at i*cols + j, i along s, j along v.
+// A1 is stored as three 2D planes. A2 does not depend on s, so it is stored as
+// three rows of `cols` values; row 0 (s = 0, Dirichlet) has zero coefficients.
+// The stencils follow python/adi_heston/operators.py and fd.py operation by
+// operation, so with ADI_EXACT (no FMA) they reproduce Python bit for bit,
+// signed zeros included.
+//
+// Project: ADI finite-difference methods for American options under Heston
+//          Math/CS 714, UW–Madison, Fall 2026
+// Author:  Ganesh Arivoli <arivoli@wisc.edu>
+// -----------------------------------------------------------------------------
+#pragma once
+
+#include <cuda_runtime.h>
+
+#include <climits>
+#include <stdexcept>
+
+#include "host/io.hpp"
+#include "kernels/common.cuh"
+
+namespace adi {
+
+// Read-only views of the operator coefficients, passed to kernels by value.
+struct OperatorView {
+    const real* a1_lower;  // rows*cols each: A1 couples node (i, j) to (i-1, j) and (i+1, j)
+    const real* a1_diag;
+    const real* a1_upper;
+    const real* a2_lower;  // cols each: A2 couples (i, j) to (i, j-1) and (i, j+1), the same for every i >= 1
+    const real* a2_diag;
+    const real* a2_upper;
+    const real* a0_coef;  // rows*cols: rho*xi*s*v, zero on all edges
+    const real* w_s;      // rows*3: first-derivative weights in s on (i-1, i, i+1)
+    const real* w_v;      // cols*3: first-derivative weights in v on (j-1, j, j+1)
+    int rows;             // m + 1
+    int cols;             // n + 1
+};
+
+// Owns the device copies of the operator coefficients of one problem.
+class DeviceOperators {
+public:
+    explicit DeviceOperators(const HostProblem& p)
+        : a1_(p.a1), a2_(p.a2), a0_coef_(p.a0_coef), w_s_(p.w_s), w_v_(p.w_v),
+          rows_(static_cast<int>(p.rows)), cols_(static_cast<int>(p.cols)) {
+        if (p.rows * p.cols >= static_cast<std::size_t>(INT_MAX)) {
+            throw std::runtime_error("grid too large for 32-bit node indices");
+        }
+    }
+
+    OperatorView view() const {
+        const std::size_t n = static_cast<std::size_t>(rows_) * cols_;
+        const std::size_t c = cols_;
+        return {a1_.data(), a1_.data() + n, a1_.data() + 2 * n,
+                a2_.data(), a2_.data() + c, a2_.data() + 2 * c,
+                a0_coef_.data(), w_s_.data(), w_v_.data(), rows_, cols_};
+    }
+    int rows() const { return rows_; }
+    int cols() const { return cols_; }
+
+private:
+    DeviceBuffer<real> a1_, a2_, a0_coef_, w_s_, w_v_;
+    int rows_, cols_;
+};
+
+// ---- per-node stencils ------------------------------------------------------------------------
+
+// Load through the read-only data cache. Only for arrays the running kernel does not write.
+__device__ __forceinline__ real ld(const real* p) { return __ldg(p); }
+
+// (A1 U)(i, j) = (diag*U(i,j) + lower*U(i-1,j)) + upper*U(i+1,j), the order of operators.apply_A1.
+__device__ __forceinline__ real apply_A1_at(const OperatorView& op, const real* U, int i, int j) {
+    const int k = i * op.cols + j;
+    real value = ld(op.a1_diag + k) * ld(U + k);
+    if (i > 0) value += ld(op.a1_lower + k) * ld(U + k - op.cols);
+    if (i + 1 < op.rows) value += ld(op.a1_upper + k) * ld(U + k + op.cols);
+    return value;
+}
+
+// (A2 U)(i, j), the order of operators.apply_A2. Row 0 still multiplies its zero coefficients,
+// as the reference does, so a negative U gives -0 there exactly as in Python.
+__device__ __forceinline__ real apply_A2_at(const OperatorView& op, const real* U, int i, int j) {
+    const int k = i * op.cols + j;
+    const bool dirichlet = (i == 0);
+    const real lower = dirichlet ? real(0) : ld(op.a2_lower + j);
+    const real diag = dirichlet ? real(0) : ld(op.a2_diag + j);
+    const real upper = dirichlet ? real(0) : ld(op.a2_upper + j);
+    real value = diag * ld(U + k);
+    if (j > 0) value += lower * ld(U + k - 1);
+    if (j + 1 < op.cols) value += upper * ld(U + k + 1);
+    return value;
+}
+
+// dU/dv at (i, j): zero in the first and last column, else the three-point formula of fd.apply_three_point.
+__device__ __forceinline__ real dv_at(const OperatorView& op, const real* U, int i, int j) {
+    if (j == 0 || j + 1 == op.cols) return real(0);
+    const int k = i * op.cols + j;
+    const real* w = op.w_v + 3 * j;
+    return (ld(w) * ld(U + k - 1) + ld(w + 1) * ld(U + k)) + ld(w + 2) * ld(U + k + 1);
+}
+
+// (A0 U)(i, j) = a0_coef * (s-derivative of the v-derivative), as fd.mixed_derivative; zero on rows 0 and m.
+__device__ __forceinline__ real apply_A0_at(const OperatorView& op, const real* U, int i, int j) {
+    if (i == 0 || i + 1 == op.rows) return real(0);
+    const real* w = op.w_s + 3 * i;
+    const real mixed = (ld(w) * dv_at(op, U, i - 1, j) + ld(w + 1) * dv_at(op, U, i, j)) +
+                       ld(w + 2) * dv_at(op, U, i + 1, j);
+    return ld(op.a0_coef + i * op.cols + j) * mixed;
+}
+
+// ---- kernels (launched through these host functions) ------------------------------------------
+
+// Arguments of K1, the explicit stage of every scheme. Optional outputs are written only when non-null.
+struct ExplicitStageArgs {
+    const real* U;    // solution at the old time
+    const real* lam;  // Ikonen-Toivanen multiplier, or nullptr for a European option
+    real* R1;         // Y0 - c*A1U, row 0 = boundary: right-hand side of the s-solve
+    real* A2U;        // needed by the v-solve
+    real* A1U;        // optional: Craig-Sneyd and Modified Craig-Sneyd
+    real* Y0;         // optional: the corrected schemes
+    real* A0U;        // optional: Craig-Sneyd and Modified Craig-Sneyd
+    real* AU;         // optional: Modified Craig-Sneyd and Hundsdorfer-Verwer
+    real dtau;
+    real c;           // theta_adi * dtau
+    real boundary;    // Dirichlet value on the s = 0 row at the new time
+};
+
+// K1: A0U, A1U, A2U; Y0 = U + dtau*AU (+ dtau*lam); R1 = Y0 - c*A1U. One thread per node.
+void launch_explicit_stage(const OperatorView& op, const ExplicitStageArgs& args, cudaStream_t stream);
+
+// A0 X, A1 X and A2 X on the whole grid, for the single-kernel fixture checks.
+void launch_apply_probe(const OperatorView& op, const real* X, real* A0X, real* A1X, real* A2X,
+                        cudaStream_t stream);
+
+}  // namespace adi

@@ -35,7 +35,7 @@ option(ADI_RECOMPUTE_FACTORS "Recompute the Thomas factors every step instead of
 option(ADI_DEBUG_SYNC "Synchronize and check for errors after every kernel launch" OFF)
 
 # Each .cu file launches only its own kernels through plain host functions, so no separable compilation.
-add_executable(adi_cuda main.cu host/io.cpp)
+add_executable(adi_cuda main.cu host/io.cpp kernels/explicit.cu)
 target_include_directories(adi_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(adi_cuda PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic -ffp-contract=off>
