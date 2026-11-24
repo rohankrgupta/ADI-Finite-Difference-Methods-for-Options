@@ -274,6 +274,7 @@ K = 100, T = 1, S_max = 800, V_max = 5.
 | `tiny` | 6 x 5 | 4 | yes; small enough to print and debug by hand |
 | `small` | 21 x 11 | 20 | yes; the main check |
 | `medium` | 101 x 51 | 50 | no; generate with `python -m adi_heston.fixtures generate --case medium` |
+| `large` | 801 x 401 | 50 | no; generate with `python -m adi_heston.fixtures generate --case large` (long, odd-length lines for the ports) |
 
 The base cases above use the Douglas scheme for a European put and check the six kernels. **Variant cases**
 check one step (`step.bin`) and the full run (`U_final.bin`) of each other scheme, and of all four schemes
@@ -302,7 +303,7 @@ The exit code is 1 if anything fails.
 The algorithm is the same, but compilers reorder arithmetic and use fused multiply-add instructions, so agreement is
 close but not bit-for-bit. A float32 port would need its own, looser tolerances (about 1e-5).
 
-**The C++ port** (`cpp/`, see [`cpp/README.md`](../cpp/README.md)) passes every check on all ten cases, base and variant, bit for bit (relative error 0) at 1 to 16 threads. Large benchmark grids get inputs only: `python -m adi_heston.fixtures generate --grid M N STEPS` writes them to `bench_inputs/`.
+**The C++ port** (`cpp/`, see [`cpp/README.md`](../cpp/README.md)) passes every check on all ten cases, base and variant, bit for bit (relative error 0) at 1 to 16 threads. Large benchmark grids get inputs only: `python -m adi_heston.fixtures generate --grid M N STEPS` writes them to `bench_inputs/`. Add `--scheme NAME` and `--american` to benchmark another scheme or an American put: the schedule then uses that scheme's `theta_adi` and the American boundary values, and `settings.bin` records the problem.
 
 **Evidence the files are enough.** A test (`test_fixtures.py`) implements the six kernels using only these files and
 the definitions in Section 4.3, without importing the solver. It passes every check, with errors between 0 and 2e-15.

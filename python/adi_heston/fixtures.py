@@ -9,7 +9,7 @@ Each test case is a folder of raw arrays plus one ``meta.json``:
   JSON: [solve_c, dtau, theta_adi, boundary], the last three being the arguments of
   the single Douglas step.
 
-The base cases (tiny, small, medium) use the Douglas scheme for a European put and also
+The base cases (tiny, small, medium, large) use the Douglas scheme for a European put and also
 check the six kernels one by one. The variant cases (small_<scheme> and
 small_american_<scheme>) check one step and the full run of each scheme, European and
 American. They add ``settings.bin`` = [scheme id, american (0 or 1), start-up half-steps],
@@ -21,8 +21,9 @@ A port writes its outputs into its own folder, using the same file names and for
 produced yet are reported as "not provided", not as failures.
 
 Usage:
-    python -m adi_heston.fixtures generate [--case tiny small medium small_craig_sneyd ...] [--out DIR]
-    python -m adi_heston.fixtures generate --grid M N STEPS [--out DIR]   # inputs only, for benchmarks
+    python -m adi_heston.fixtures generate [--case tiny small medium large small_craig_sneyd ...] [--out DIR]
+    python -m adi_heston.fixtures generate --grid M N STEPS [--scheme NAME] [--american] [--out DIR]
+        (inputs only, for benchmarks)
     python -m adi_heston.fixtures check CASE_DIR PORT_OUTPUT_DIR
 """
 
@@ -50,7 +51,8 @@ PARAMS = HestonParams(r=0.025, q=0.01, kappa=1.5, theta=0.04, xi=0.3, rho=-0.9)
 OPTION = OptionSpec(K=100.0, T=1.0)
 S_MAX, V_MAX = 8.0 * OPTION.K, 5.0
 RANNACHER_HALF_STEPS = 2
-CASES = {"tiny": (5, 4, 4), "small": (20, 10, 20), "medium": (100, 50, 50)}  # (m, n, n_steps)
+# (m, n, n_steps). medium and large are not committed; large gives the ports long, odd-length lines to check.
+CASES = {"tiny": (5, 4, 4), "small": (20, 10, 20), "medium": (100, 50, 50), "large": (800, 400, 50)}
 
 KERNEL_OUTPUTS = ["apply_A0", "apply_A1", "apply_A2", "solve_A1", "solve_A2", "douglas_step"]
 OUTPUTS = KERNEL_OUTPUTS + ["U_final"]  # outputs of the base cases
@@ -206,18 +208,48 @@ def _generate_variant(case: str, out_dir: Path) -> Path:
     return folder
 
 
-def generate_inputs(m: int, n: int, n_steps: int, out_dir: Path = BENCH_DIR) -> Path:
+def generate_inputs(
+    m: int,
+    n: int,
+    n_steps: int,
+    out_dir: Path = BENCH_DIR,
+    scheme: str = "douglas",
+    american: bool = False,
+) -> Path:
     """Write only the inputs of the time loop for an (m+1) x (n+1) grid, for benchmarks.
 
     Uses the same test problem as the fixture cases but no expected outputs, which
-    would be slow to compute for large grids. Returns the folder, named
-    ``grid_<m+1>x<n+1>_N<n_steps>``.
+    would be slow to compute for large grids. The schedule uses the scheme's default
+    theta_adi and the boundary values of a European or American put. ``settings.bin``
+    records the problem in the variant-case format [scheme id, american, start-up
+    half-steps], so a port runs exactly this problem.
+
+    Returns the folder, named ``grid_<m+1>x<n+1>_N<n_steps>`` for Douglas and a European
+    put, with ``_<scheme>`` and ``_american`` appended otherwise.
     """
-    folder = Path(out_dir) / f"grid_{m + 1}x{n + 1}_N{n_steps}"
+    if scheme not in SCHEME_IDS:
+        raise ValueError(f"unknown scheme {scheme!r}; choose from {sorted(SCHEME_IDS)}")
+    folder_name = f"grid_{m + 1}x{n + 1}_N{n_steps}"
+    if scheme != "douglas":
+        folder_name += f"_{scheme}"
+    if american:
+        folder_name += "_american"
+    folder = Path(out_dir) / folder_name
     folder.mkdir(parents=True, exist_ok=True)
-    _, _, inputs = _time_loop_inputs(m, n, n_steps)
+
+    option = OptionSpec(K=OPTION.K, T=OPTION.T, american=american)
+    theta = DEFAULT_THETA[scheme]
+    _, _, inputs = _time_loop_inputs(m, n, n_steps, option, theta)
+    inputs["settings"] = np.array([SCHEME_IDS[scheme], float(american), RANNACHER_HALF_STEPS])
     shapes = {name: _write(folder / f"{name}.bin", a) for name, a in inputs.items()}
-    meta = {"format": FORMAT, **_problem_meta(m, n, n_steps), "shapes": shapes}
+    meta = {
+        "format": FORMAT,
+        **_problem_meta(m, n, n_steps),
+        "scheme": scheme,
+        "american": american,
+        "theta_adi": theta,
+        "shapes": shapes,
+    }
     (folder / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     return folder
 
@@ -260,6 +292,9 @@ def _main(argv: list[str] | None = None) -> int:
     gen.add_argument("--case", nargs="+", choices=sorted(CASES) + sorted(VARIANTS), default=["tiny", "small", *VARIANTS])
     gen.add_argument("--grid", nargs=3, type=int, metavar=("M", "N", "STEPS"),
                      help="write inputs only for an (M+1) x (N+1) grid into bench_inputs/")
+    gen.add_argument("--scheme", choices=sorted(SCHEME_IDS), default=None,
+                     help="with --grid: the ADI scheme whose schedule to write (default: douglas)")
+    gen.add_argument("--american", action="store_true", help="with --grid: price an American put")
     gen.add_argument("--out", type=Path, default=None)
     chk = sub.add_parser("check", help="compare a port's outputs with the Python outputs")
     chk.add_argument("case_dir", type=Path)
@@ -267,8 +302,12 @@ def _main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "generate":
+        if (args.scheme or args.american) and not args.grid:
+            gen.error("--scheme and --american apply only with --grid")
         if args.grid:
-            print(f"wrote {generate_inputs(*args.grid, out_dir=args.out or BENCH_DIR)}")
+            folder = generate_inputs(*args.grid, out_dir=args.out or BENCH_DIR, scheme=args.scheme or "douglas",
+                                     american=args.american)
+            print(f"wrote {folder}")
             return 0
         for case in args.case:
             print(f"wrote {generate(case, args.out or DEFAULT_DIR)}")

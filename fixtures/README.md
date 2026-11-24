@@ -14,5 +14,9 @@ To regenerate these files (needed whenever a Python kernel changes):
 
 ```bash
 python -m adi_heston.fixtures generate                 # tiny, small and the 7 variant cases (committed)
-python -m adi_heston.fixtures generate --case medium   # not committed
+python -m adi_heston.fixtures generate --case medium   # 101 x 51, not committed
+python -m adi_heston.fixtures generate --case large    # 801 x 401, long lines for the ports; not committed
 ```
+
+Benchmark grids get inputs only, written to `bench_inputs/`: `python -m adi_heston.fixtures generate --grid M N STEPS
+[--scheme NAME] [--american]`. Their `settings.bin` records the scheme and exercise style.

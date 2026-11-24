@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 
 from adi_heston import fixtures
-from adi_heston.fixtures import DEFAULT_DIR, OUTPUTS, check, generate, load
+from adi_heston.fixtures import DEFAULT_DIR, OUTPUTS, check, generate, generate_inputs, load
+from adi_heston.params import OptionSpec
+from adi_heston.solver import DEFAULT_THETA, time_schedule
 from adi_heston.tridiag import solve_tridiagonal
 
 
@@ -184,6 +186,48 @@ def test_inputs_only_generator_writes_the_time_loop_inputs(tmp_path):
     for name in ("a1", "a2", "a0_coef", "w_s", "w_v", "U0", "schedule"):
         np.testing.assert_array_equal(load(folder, name), load(reference, name))
     assert not (folder / "U_final.bin").exists()
+
+
+def test_inputs_generator_default_problem_is_douglas_european(tmp_path):
+    folder = generate_inputs(20, 10, 20, tmp_path)
+    np.testing.assert_array_equal(load(folder, "settings"), [0.0, 0.0, fixtures.RANNACHER_HALF_STEPS])
+    meta = json.loads((folder / "meta.json").read_text())
+    assert (meta["scheme"], meta["american"], meta["theta_adi"]) == ("douglas", False, 0.5)
+
+
+@pytest.mark.parametrize("american", [False, True])
+@pytest.mark.parametrize("scheme", sorted(fixtures.SCHEME_IDS))
+def test_inputs_generator_writes_the_schemes_schedule(tmp_path, scheme, american):
+    folder = generate_inputs(20, 10, 20, tmp_path, scheme=scheme, american=american)
+    suffix = ("" if scheme == "douglas" else f"_{scheme}") + ("_american" if american else "")
+    assert folder.name == f"grid_21x11_N20{suffix}"
+
+    schedule = load(folder, "schedule")  # rows of (dtau, theta_adi, boundary)
+    half = fixtures.RANNACHER_HALF_STEPS
+    assert (schedule[:half, 1] == 1.0).all() and (schedule[half:, 1] == DEFAULT_THETA[scheme]).all()
+    if american:
+        assert (schedule[:, 2] == fixtures.OPTION.K).all()  # s = 0: immediate exercise is worth K
+    else:
+        assert (schedule[:, 2] < fixtures.OPTION.K).all()  # K exp(-r tau)
+    option = OptionSpec(K=fixtures.OPTION.K, T=fixtures.OPTION.T, american=american)
+    np.testing.assert_array_equal(schedule, time_schedule(fixtures.PARAMS, option, 20, DEFAULT_THETA[scheme], half))
+    np.testing.assert_array_equal(load(folder, "settings"), [fixtures.SCHEME_IDS[scheme], float(american), half])
+
+
+def test_inputs_generator_matches_the_variant_case(tmp_path):
+    """Benchmark inputs for a scheme are exactly the inputs of the variant case that the fixtures verify."""
+    folder = generate_inputs(20, 10, 20, tmp_path, scheme="hundsdorfer_verwer", american=True)
+    reference = generate("small_american_hundsdorfer_verwer", tmp_path / "cases")
+    for name in ("a1", "a2", "a0_coef", "w_s", "w_v", "U0", "schedule", "settings"):
+        np.testing.assert_array_equal(load(folder, name), load(reference, name), err_msg=name)
+
+
+def test_command_line_grid_with_scheme(tmp_path, capsys):
+    argv = ["generate", "--grid", "20", "10", "20", "--scheme", "craig_sneyd", "--american", "--out", str(tmp_path)]
+    assert fixtures._main(argv) == 0
+    assert (tmp_path / "grid_21x11_N20_craig_sneyd_american" / "settings.bin").exists()
+    with pytest.raises(SystemExit):  # --scheme and --american need --grid
+        fixtures._main(["generate", "--scheme", "craig_sneyd", "--out", str(tmp_path)])
 
 
 def test_variant_case_settings_and_outputs(tmp_path):

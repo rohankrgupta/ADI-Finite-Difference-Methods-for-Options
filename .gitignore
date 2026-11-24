@@ -26,8 +26,13 @@ cmake-build-*/
 .idea/
 .DS_Store
 
-# Generated test outputs that are not committed (regenerate with: python -m adi_heston.fixtures generate --case medium)
+# Generated test outputs that are not committed (regenerate with: python -m adi_heston.fixtures generate --case medium large)
 fixtures/medium/
+fixtures/large/
 
 # Benchmark inputs for large grids (regenerate with: python -m adi_heston.fixtures generate --grid M N STEPS)
 bench_inputs/
+
+# Personal work log: design notes, benchmark and profiling results (never committed)
+worklog/
+results/
