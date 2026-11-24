@@ -35,8 +35,11 @@ from adi_heston.solver import _predict
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CASES = ["tiny", "small", "medium", "large"]
 ALL_CASES = BASE_CASES + sorted(fixtures.VARIANTS)
-LATEST_STAGE = 3
+LATEST_STAGE = 4
 INTERMEDIATE_TOLERANCE = 1e-12  # the fixture tolerance for single kernels
+RESIDUAL_TOLERANCE = 1e-12  # backward error of the tridiagonal solves
+# Distinct values of c = theta_adi*dtau, so factor sets: the start-up c equals the main c when theta_adi = 1/2.
+FACTOR_SETS = {"douglas": 1, "craig_sneyd": 1, "modified_craig_sneyd": 2, "hundsdorfer_verwer": 2}
 
 
 def required_outputs(stage: int, case: str) -> tuple[list[str], list[str]]:
@@ -47,15 +50,50 @@ def required_outputs(stage: int, case: str) -> tuple[list[str], list[str]]:
         if case in BASE_CASES:
             fixture_outputs += ["apply_A0", "apply_A1", "apply_A2"]
         intermediates += ["k1_R1", "k1_A2U"]
+    if stage >= 4:
+        if case in BASE_CASES:
+            fixture_outputs += ["solve_A1", "solve_A2"]
     return fixture_outputs, intermediates
 
 
-def operators_from_files(case_dir: Path) -> HestonOperators:
+def operators_from_files(case_dir: Path, absolute: bool = False) -> HestonOperators:
     """The reference operators built from the case's own coefficient files (not rebuilt from parameters,
-    which would bring in platform rounding differences)."""
-    load = lambda name: fixtures.load(case_dir, name)  # noqa: E731
+    which would bring in platform rounding differences). With absolute=True, every coefficient is |.|."""
+    load = (lambda name: np.abs(fixtures.load(case_dir, name))) if absolute else (lambda name: fixtures.load(case_dir, name))
     return HestonOperators(grid=None, params=None, a1=load("a1"), a2=load("a2"), a0_coef=load("a0_coef"),
                            w_s=load("w_s"), w_v=load("w_v"), upwind_s=None, upwind_v=None)
+
+
+def solve_residuals(case_dir: Path, out_dir: Path) -> list[tuple[str, str, float | None]]:
+    """Backward error of the port's solve_A1/A2 on kernel_input: max|(I - cA)x - r| divided by the
+    largest term summed, max(|x| + c|A||x|)."""
+    ops, abs_ops = operators_from_files(case_dir), operators_from_files(case_dir, absolute=True)
+    rhs = fixtures.load(case_dir, "kernel_input")
+    c = float(np.fromfile(case_dir / "scalars.bin", dtype="<f8")[0])
+    rows = []
+    for name, apply, apply_abs in (("solve_A1", ops.apply_A1, abs_ops.apply_A1),
+                                   ("solve_A2", ops.apply_A2, abs_ops.apply_A2)):
+        path = out_dir / f"{name}.bin"
+        if not path.exists():
+            rows.append((f"{name} residual", "MISSING", None))
+            continue
+        x = np.fromfile(path, dtype="<f8").reshape(rhs.shape)
+        residual = np.max(np.abs(x - c * apply(x) - rhs)) / np.max(np.abs(x) + c * apply_abs(np.abs(x)))
+        rows.append((f"{name} residual", "PASS" if residual <= RESIDUAL_TOLERANCE else "FAIL", float(residual)))
+    return rows
+
+
+def factor_set_check(case: str, case_dir: Path, out_dir: Path) -> tuple[str, str, float | None]:
+    """The port must build one factor set per distinct c = theta_adi*dtau of the schedule."""
+    path = out_dir / "tridiag_sets.bin"
+    if not path.exists():
+        return ("tridiag_sets", "MISSING", None)
+    schedule = fixtures.load(case_dir, "schedule")
+    distinct = len({theta * dtau for dtau, theta, _ in schedule})
+    scheme = fixtures.VARIANTS[case][1] if case in fixtures.VARIANTS else "douglas"
+    got = int(np.fromfile(path, dtype="<f8")[0])
+    ok = got == distinct == FACTOR_SETS[scheme]
+    return ("tridiag_sets", "PASS" if ok else f"FAIL (got {got}, schedule has {distinct})", float(got))
 
 
 def expected_intermediates(case_dir: Path) -> dict[str, np.ndarray]:
@@ -106,12 +144,17 @@ def check_case(binary: Path, build: Path, case: str, stage: int, exact: bool) ->
         for name in intermediates:
             status, err = compare(out_dir / f"{name}.bin", expected[name], INTERMEDIATE_TOLERANCE, exact)
             rows.append((name, status, err))
+    if stage >= 4:
+        if case in BASE_CASES:
+            rows += solve_residuals(case_dir, out_dir)
+        rows.append(factor_set_check(case, case_dir, out_dir))
 
     ok = all(status == "PASS" for _, status, _ in rows)
     print(f"{case}: {'ok' if ok else 'FAILED'}")
     for name, status, err in rows:
-        err_text = f"{err:.2e}" if err is not None else "-"
-        print(f"    {name:14s} {status:20s} rel. error {err_text}")
+        value = "-" if err is None else (f"{int(err)}" if name == "tridiag_sets" else f"{err:.2e}")
+        label = "count" if name == "tridiag_sets" else ("backward error" if "residual" in name else "rel. error")
+        print(f"    {name:18s} {status:20s} {label} {value}")
     return ok
 
 

@@ -4,8 +4,9 @@
 //   adi_cuda CASE_DIR OUT_DIR
 //       Check mode: reads a fixture case and writes its outputs for
 //       `python -m adi_heston.fixtures check CASE_DIR OUT_DIR` and
-//       scripts/check_cuda.py. So far: apply_A0/A1/A2 on kernel_input, and
-//       k1_R1 / k1_A2U (the explicit stage K1 with the one-step arguments).
+//       scripts/check_cuda.py. So far: apply_A0/A1/A2 and solve_A1/A2 on
+//       kernel_input, k1_R1 / k1_A2U (the explicit stage K1 with the one-step
+//       arguments), and tridiag_sets (factor sets the schedule needs).
 //   adi_cuda INPUTS_DIR --bench
 //       Benchmark mode (not implemented yet).
 //
@@ -82,6 +83,20 @@ void check_mode(const fs::path& case_dir, const fs::path& out_dir) {
     adi::launch_explicit_stage(op, args, nullptr);
     write_device(out_dir / "k1_R1.bin", R1);
     write_device(out_dir / "k1_A2U.bin", A2U);
+
+    // Both tridiagonal solves on kernel_input with solve_c.
+    adi::Tridiag probe(op);
+    const int probe_set = probe.prepare(problem.scalars[0], nullptr);
+    adi::DeviceBuffer<adi::real> S1(n), S2(n);
+    probe.solve_s(probe_set, X.data(), S1.data(), nullptr);
+    probe.solve_v(probe_set, X.data(), nullptr, S2.data(), nullptr);
+    write_device(out_dir / "solve_A1.bin", S1);
+    write_device(out_dir / "solve_A2.bin", S2);
+
+    // The factor sets the schedule needs: one per distinct c = theta*dtau.
+    adi::Tridiag schedule_sets(op);
+    for (const adi::Step& step : problem.schedule) schedule_sets.prepare(step.theta * step.dtau, nullptr);
+    adi::write_bin(out_dir / "tridiag_sets.bin", {static_cast<double>(schedule_sets.factor_sets())});
 }
 
 [[noreturn]] void usage() {

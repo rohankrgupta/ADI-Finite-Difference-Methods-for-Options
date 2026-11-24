@@ -19,7 +19,9 @@
 #include <cuda_runtime.h>
 
 #include <climits>
+#include <cstddef>
 #include <stdexcept>
+#include <vector>
 
 #include "host/io.hpp"
 #include "kernels/common.cuh"
@@ -135,5 +137,49 @@ void launch_explicit_stage(const OperatorView& op, const ExplicitStageArgs& args
 // A0 X, A1 X and A2 X on the whole grid, for the single-kernel fixture checks.
 void launch_apply_probe(const OperatorView& op, const real* X, real* A0X, real* A1X, real* A2X,
                         cudaStream_t stream);
+
+// ---- tridiagonal solves (tridiag.cu) ------------------------------------------------------------
+
+// The factors of (I - c*A1) and (I - c*A2) for one value of c, as the solve kernels see them.
+// pivot holds 1/den (default; the solve multiplies) or den (ADI_EXACT; the solve divides, like Python).
+// With ADI_RECOMPUTE_FACTORS the factor pointers are null and the solves keep c* in `scratch`.
+struct FactorView {
+    const real* s_cstar;  // rows*cols
+    const real* s_pivot;  // rows*cols
+    const real* v_cstar;  // 2*cols: the sequence of the Dirichlet row 0, then the one shared by rows >= 1
+    const real* v_pivot;  // 2*cols
+    real* scratch;        // rows*cols, ADI_RECOMPUTE_FACTORS only
+    real c;
+};
+
+// Thomas solves of (I - c*A1) and (I - c*A2), one thread per grid line, with the factors computed once
+// per distinct value of c. Keeps a copy of the operator view: the DeviceOperators must outlive it.
+class Tridiag {
+public:
+    explicit Tridiag(const OperatorView& op);
+
+    // Index of the factor set for c (compared exactly), factorizing it on first use.
+    int prepare(real c, cudaStream_t stream);
+    std::size_t factor_sets() const { return sets_.size(); }
+
+    // (I - c*A1) X = R along s, one system per column. R and X must be different arrays; row 0 of R
+    // (the Dirichlet row) passes through unchanged.
+    void solve_s(int set, const real* R, real* X, cudaStream_t stream);
+
+    // (I - c*A2) X = Y - c*A2X along v, one system per row; with A2X null the right-hand side is Y.
+    // Y, A2X and X must be different arrays.
+    void solve_v(int set, const real* Y, const real* A2X, real* X, cudaStream_t stream);
+
+private:
+    struct Set {
+        real c = 0;
+        DeviceBuffer<real> s_cstar, s_pivot, v_cstar, v_pivot;
+    };
+    FactorView view(int set);
+
+    OperatorView op_;
+    std::vector<Set> sets_;
+    DeviceBuffer<real> scratch_;  // ADI_RECOMPUTE_FACTORS only
+};
 
 }  // namespace adi
