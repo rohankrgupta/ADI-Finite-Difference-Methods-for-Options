@@ -32,7 +32,7 @@ const char* scheme_name(Scheme scheme) {
 }
 
 bool AdiSolver::supports(Scheme scheme) {
-    return scheme == Scheme::douglas || scheme == Scheme::craig_sneyd;
+    return scheme == Scheme::douglas || scheme == Scheme::craig_sneyd || scheme == Scheme::modified_craig_sneyd;
 }
 
 AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
@@ -52,12 +52,13 @@ AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
     ws_.R = DeviceBuffer<real>(n);
     ws_.Y1 = DeviceBuffer<real>(n);
     ws_.A2U = DeviceBuffer<real>(n);
-    if (scheme == Scheme::craig_sneyd) {
+    if (scheme == Scheme::craig_sneyd || scheme == Scheme::modified_craig_sneyd) {
         ws_.Y0 = DeviceBuffer<real>(n);
         ws_.A0U = DeviceBuffer<real>(n);
         ws_.A1U = DeviceBuffer<real>(n);
         ws_.Y2 = DeviceBuffer<real>(n);
     }
+    if (scheme == Scheme::modified_craig_sneyd) ws_.AU = DeviceBuffer<real>(n);
     U0_ = DeviceBuffer<real>(problem.U0);
     if (american_) {
         ws_.lam = DeviceBuffer<real>(n);
@@ -104,6 +105,9 @@ void AdiSolver::enqueue(const StepPlan& p) {
             break;
         case Scheme::craig_sneyd:
             enqueue_craig_sneyd_step(ctx, p);
+            break;
+        case Scheme::modified_craig_sneyd:
+            enqueue_modified_craig_sneyd_step(ctx, p);
             break;
         default:
             throw std::runtime_error(std::string("scheme ") + scheme_name(p.scheme) + " is not implemented yet");
