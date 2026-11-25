@@ -36,7 +36,9 @@ from adi_heston.solver import _predict
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CASES = ["tiny", "small", "medium", "large"]
 ALL_CASES = BASE_CASES + sorted(fixtures.VARIANTS)
-LATEST_STAGE = 6
+LATEST_STAGE = 7
+# Schemes whose time loop the port runs (stage 6: Douglas; stage 7 adds the corrected schemes one by one).
+LOOP_SCHEMES = {"douglas", "craig_sneyd"}
 INTERMEDIATE_TOLERANCE = 1e-12  # the fixture tolerance for single kernels
 RESIDUAL_TOLERANCE = 1e-12  # backward error of the tridiagonal solves
 # Distinct values of c = theta_adi*dtau, so factor sets: the start-up c equals the main c when theta_adi = 1/2.
@@ -57,9 +59,11 @@ def required_outputs(stage: int, case: str) -> tuple[list[str], list[str]]:
     if stage >= 5:
         if case in BASE_CASES:  # the Douglas time loop for a European put
             fixture_outputs += ["douglas_step", "U_final"]
-    # Variant cases: the time loop of Douglas from stage 6 (American), of every scheme from stage 7.
-    if case in fixtures.VARIANTS and (stage >= 7 or (stage >= 6 and fixtures.VARIANTS[case][1] == "douglas")):
-        fixture_outputs += json.loads((fixtures.DEFAULT_DIR / case / "meta.json").read_text())["outputs"]
+    # Variant cases: the time loop, from stage 6 on, for every scheme the port implements.
+    if case in fixtures.VARIANTS and stage >= 6:
+        loop_schemes = LOOP_SCHEMES if stage >= 7 else {"douglas"}
+        if fixtures.VARIANTS[case][1] in loop_schemes:
+            fixture_outputs += json.loads((fixtures.DEFAULT_DIR / case / "meta.json").read_text())["outputs"]
     return fixture_outputs, intermediates
 
 
@@ -213,6 +217,8 @@ def main() -> int:
 
     print(f"build {build} ({'exact: byte-identical' if exact else 'default: fixture tolerances'}), stage {args.stage}")
     results = [check_case(binary, build, case, args.stage, exact) for case in args.cases]
+    fixture_outputs = sum(len(required_outputs(args.stage, case)[0]) for case in args.cases)
+    print(f"{fixture_outputs} fixture outputs required")
     print(f"{sum(results)}/{len(results)} cases passed")
     return 0 if all(results) else 1
 

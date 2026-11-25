@@ -69,6 +69,15 @@ private:
     int rows_, cols_;
 };
 
+// Launch shape of every one-thread-per-node kernel: 32x8 blocks with x along j (contiguous in memory),
+// so a warp reads 32 neighbouring values of each array.
+constexpr int kNodeBlockX = 32;
+constexpr int kNodeBlockY = 8;
+inline dim3 node_block() { return dim3(kNodeBlockX, kNodeBlockY); }
+inline dim3 node_grid(const OperatorView& op) {
+    return dim3((op.cols + kNodeBlockX - 1) / kNodeBlockX, (op.rows + kNodeBlockY - 1) / kNodeBlockY);
+}
+
 // ---- per-node stencils ------------------------------------------------------------------------
 
 // Load through the read-only data cache. Only for arrays the running kernel does not write.

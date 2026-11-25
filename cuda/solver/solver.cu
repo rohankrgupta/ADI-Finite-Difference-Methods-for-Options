@@ -31,6 +31,10 @@ const char* scheme_name(Scheme scheme) {
     return "unknown";
 }
 
+bool AdiSolver::supports(Scheme scheme) {
+    return scheme == Scheme::douglas || scheme == Scheme::craig_sneyd;
+}
+
 AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
     : created_(std::chrono::steady_clock::now()),
       stream_(stream),
@@ -38,15 +42,22 @@ AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
       ops_(problem),
       tridiag_(ops_.view()) {
     const Scheme scheme = static_cast<Scheme>(problem.scheme);
-    if (scheme != Scheme::douglas) {
+    if (!supports(scheme)) {
         throw std::runtime_error(std::string("scheme ") + scheme_name(scheme) + " is not implemented yet");
     }
 
+    // Every scheme needs U, R, Y1 and A2U; the corrected schemes add what their second pass reads.
     const std::size_t n = problem.size();
     ws_.U = DeviceBuffer<real>(n);
     ws_.R = DeviceBuffer<real>(n);
     ws_.Y1 = DeviceBuffer<real>(n);
     ws_.A2U = DeviceBuffer<real>(n);
+    if (scheme == Scheme::craig_sneyd) {
+        ws_.Y0 = DeviceBuffer<real>(n);
+        ws_.A0U = DeviceBuffer<real>(n);
+        ws_.A1U = DeviceBuffer<real>(n);
+        ws_.Y2 = DeviceBuffer<real>(n);
+    }
     U0_ = DeviceBuffer<real>(problem.U0);
     if (american_) {
         ws_.lam = DeviceBuffer<real>(n);
@@ -63,7 +74,7 @@ AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
 
 StepPlan AdiSolver::plan(const Step& step, Scheme scheme) {
     const real c = step.theta * step.dtau;  // as Python's step functions compute it
-    return {step.dtau, c, step.boundary, tridiag_.prepare(c, stream_), scheme};
+    return {step.dtau, step.theta, c, step.boundary, tridiag_.prepare(c, stream_), scheme};
 }
 
 void AdiSolver::reset(const std::vector<double>& U, const std::vector<double>* lam) {
@@ -90,6 +101,9 @@ void AdiSolver::enqueue(const StepPlan& p) {
     switch (p.scheme) {
         case Scheme::douglas:
             enqueue_douglas_step(ctx, p);
+            break;
+        case Scheme::craig_sneyd:
+            enqueue_craig_sneyd_step(ctx, p);
             break;
         default:
             throw std::runtime_error(std::string("scheme ") + scheme_name(p.scheme) + " is not implemented yet");

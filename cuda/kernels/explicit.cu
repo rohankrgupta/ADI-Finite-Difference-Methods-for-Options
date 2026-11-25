@@ -17,13 +17,6 @@ namespace adi {
 
 namespace {
 
-constexpr int kBlockX = 32;  // along j
-constexpr int kBlockY = 8;   // along i
-
-dim3 node_grid(const OperatorView& op) {
-    return dim3((op.cols + kBlockX - 1) / kBlockX, (op.rows + kBlockY - 1) / kBlockY);
-}
-
 // Python: _predict (Y0 = U + dtau*AU, then += dtau*lam) and the first line of _implicit_corrections.
 __global__ void explicit_stage_kernel(OperatorView op, ExplicitStageArgs a) {
     const int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -80,20 +73,20 @@ __global__ void apply_probe_kernel(OperatorView op, const real* X, real* A0X, re
 }  // namespace
 
 void launch_explicit_stage(const OperatorView& op, const ExplicitStageArgs& args, cudaStream_t stream) {
-    explicit_stage_kernel<<<node_grid(op), dim3(kBlockX, kBlockY), 0, stream>>>(op, args);
+    explicit_stage_kernel<<<node_grid(op), node_block(), 0, stream>>>(op, args);
     CUDA_CHECK_LAST();
 }
 
 void launch_ikonen_toivanen(const OperatorView& op, real* U, real* lam, const real* payoff, real dtau,
                             cudaStream_t stream) {
-    ikonen_toivanen_kernel<<<node_grid(op), dim3(kBlockX, kBlockY), 0, stream>>>(op, U, lam, payoff, dtau,
+    ikonen_toivanen_kernel<<<node_grid(op), node_block(), 0, stream>>>(op, U, lam, payoff, dtau,
                                                                                 real(1) / dtau);
     CUDA_CHECK_LAST();
 }
 
 void launch_apply_probe(const OperatorView& op, const real* X, real* A0X, real* A1X, real* A2X,
                         cudaStream_t stream) {
-    apply_probe_kernel<<<node_grid(op), dim3(kBlockX, kBlockY), 0, stream>>>(op, X, A0X, A1X, A2X);
+    apply_probe_kernel<<<node_grid(op), node_block(), 0, stream>>>(op, X, A0X, A1X, A2X);
     CUDA_CHECK_LAST();
 }
 

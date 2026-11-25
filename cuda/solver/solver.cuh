@@ -31,14 +31,20 @@ const char* scheme_name(Scheme scheme);
 struct Workspace {
     DeviceBuffer<real> U;    // the solution, updated in place by every row
     DeviceBuffer<real> lam;  // Ikonen-Toivanen multiplier (American only)
-    DeviceBuffer<real> R;    // right-hand side of the s-solve
-    DeviceBuffer<real> Y1;   // result of the s-solve
+    DeviceBuffer<real> R;    // right-hand side of the s-solve (both passes of a corrected scheme)
+    DeviceBuffer<real> Y1;   // result of the s-solve (both passes)
     DeviceBuffer<real> A2U;  // A2 applied to U, needed by the v-solve
+    // The corrected schemes only:
+    DeviceBuffer<real> Y0;   // the predictor U + dtau*A U (+ dtau*lam)
+    DeviceBuffer<real> A0U;  // Craig-Sneyd, Modified Craig-Sneyd
+    DeviceBuffer<real> A1U;  // Craig-Sneyd, Modified Craig-Sneyd: the second pass subtracts c*A1U
+    DeviceBuffer<real> Y2;   // result of the first pass
 };
 
 // One schedule row, ready to enqueue.
 struct StepPlan {
     real dtau;
+    real theta;     // theta_adi
     real c;         // theta_adi * dtau
     real boundary;  // Dirichlet value on the s = 0 row at the end of the row
     int factor_set; // Tridiag factor set for c
@@ -53,11 +59,15 @@ struct StepContext {
     cudaStream_t stream;
 };
 
-// schemes.cu: Douglas = K1 explicit stage, s-solve, v-solve (U updated in place).
+// schemes.cu: one row of each scheme (the kernel order is described there).
 void enqueue_douglas_step(const StepContext& ctx, const StepPlan& plan);
+void enqueue_craig_sneyd_step(const StepContext& ctx, const StepPlan& plan);
 
 class AdiSolver {
 public:
+    // Whether the time loop of this scheme is implemented.
+    static bool supports(Scheme scheme);
+
     // Uploads the operators, allocates the work arrays and factorizes once per distinct c of the schedule.
     AdiSolver(const HostProblem& problem, cudaStream_t stream);
 

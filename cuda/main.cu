@@ -104,14 +104,14 @@ void check_mode(const fs::path& case_dir, const fs::path& out_dir) {
     for (const adi::Step& step : problem.schedule) schedule_sets.prepare(step.theta * step.dtau, nullptr);
     adi::write_bin(out_dir / "tridiag_sets.bin", {static_cast<double>(schedule_sets.factor_sets())});
 
-    // The time loop (implemented so far: Douglas, European and American).
-    if (problem.scheme != 0) return;
+    // The time loop, for the schemes implemented so far (European and American).
+    const adi::Scheme scheme = static_cast<adi::Scheme>(problem.scheme);
+    if (!adi::AdiSolver::supports(scheme)) return;
     if (problem.american && problem.lam_input.empty()) {
         throw std::runtime_error(case_dir.string() + ": an American case needs lam_input.bin");
     }
     const adi::CudaStream stream;
     adi::AdiSolver solver(problem, stream.get());
-    const adi::Scheme scheme = static_cast<adi::Scheme>(problem.scheme);
     std::vector<double> U, lam_out;
     std::vector<double>* lam_back = problem.american ? &lam_out : nullptr;
 
