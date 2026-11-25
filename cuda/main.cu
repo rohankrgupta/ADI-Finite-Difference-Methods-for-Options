@@ -4,16 +4,20 @@
 //   adi_cuda CASE_DIR OUT_DIR
 //       Check mode: reads a fixture case and writes its outputs for
 //       `python -m adi_heston.fixtures check CASE_DIR OUT_DIR` and
-//       scripts/check_cuda.py. So far: apply_A0/A1/A2 and solve_A1/A2 on
-//       kernel_input, k1_R1 / k1_A2U (the explicit stage K1 with the one-step
-//       arguments), and tridiag_sets (factor sets the schedule needs).
-//   adi_cuda INPUTS_DIR --bench
-//       Benchmark mode (not implemented yet).
+//       scripts/check_cuda.py: apply_A0/A1/A2 and solve_A1/A2 on kernel_input,
+//       k1_R1 / k1_A2U (the explicit stage with the one-step arguments),
+//       tridiag_sets (factor sets the schedule needs), and for the Douglas
+//       European base cases douglas_step and U_final.
+//   adi_cuda INPUTS_DIR --bench [--repeats R]
+//       Benchmark mode: one warm-up and R timed runs (default 5) of the whole
+//       schedule, timed with CUDA events on the work stream. Prints
+//       gpu,rows,cols,steps,median_ms_per_step,min_ms_per_step,setup_ms,scheme,american
 //
 // Project: ADI finite-difference methods for American options under Heston
 //          Math/CS 714, UW–Madison, Fall 2026
 // Author:  Ganesh Arivoli <arivoli@wisc.edu>
 // -----------------------------------------------------------------------------
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -25,6 +29,7 @@
 #include "host/io.hpp"
 #include "kernels/common.cuh"
 #include "kernels/kernels.cuh"
+#include "solver/solver.cuh"
 
 namespace fs = std::filesystem;
 
@@ -97,13 +102,57 @@ void check_mode(const fs::path& case_dir, const fs::path& out_dir) {
     adi::Tridiag schedule_sets(op);
     for (const adi::Step& step : problem.schedule) schedule_sets.prepare(step.theta * step.dtau, nullptr);
     adi::write_bin(out_dir / "tridiag_sets.bin", {static_cast<double>(schedule_sets.factor_sets())});
+
+    // The time loop: so far Douglas for a European put (the base cases).
+    if (problem.scheme != 0 || problem.american) return;
+    const adi::CudaStream stream;
+    adi::AdiSolver solver(problem, stream.get());
+    std::vector<double> U;
+
+    solver.reset(problem.kernel_input, nullptr);  // one Douglas step from kernel_input
+    solver.enqueue_step({dtau, theta, boundary}, adi::Scheme::douglas);
+    solver.download(U, nullptr);
+    adi::write_bin(out_dir / "douglas_step.bin", U);
+
+    solver.reset(problem.U0, nullptr);  // the full run from the payoff
+    solver.enqueue_schedule();
+    solver.download(U, nullptr);
+    adi::write_bin(out_dir / "U_final.bin", U);
+}
+
+void bench_mode(const fs::path& dir, int repeats) {
+    const adi::HostProblem problem = adi::load_case(dir);
+    const adi::CudaStream stream;
+    adi::AdiSolver solver(problem, stream.get());
+    adi::EventTimer timer;
+
+    std::vector<double> ms_per_row;
+    for (int run = 0; run <= repeats; ++run) {  // run 0 is the warm-up
+        solver.reset_to_initial();
+        timer.start(stream.get());
+        solver.enqueue_schedule();
+        timer.stop(stream.get());
+        const double ms = timer.elapsed_ms();
+        if (run > 0) ms_per_row.push_back(ms / static_cast<double>(problem.schedule.size()));
+    }
+    std::sort(ms_per_row.begin(), ms_per_row.end());
+    std::printf("gpu,%zu,%zu,%zu,%.6f,%.6f,%.3f,%s,%d\n", problem.rows, problem.cols, problem.schedule.size(),
+                ms_per_row[ms_per_row.size() / 2], ms_per_row.front(), solver.setup_ms(),
+                adi::scheme_name(static_cast<adi::Scheme>(problem.scheme)), problem.american ? 1 : 0);
 }
 
 [[noreturn]] void usage() {
     std::fprintf(stderr,
                  "usage: adi_cuda CASE_DIR OUT_DIR\n"
-                 "       adi_cuda INPUTS_DIR --bench   (not implemented yet)\n");
+                 "       adi_cuda INPUTS_DIR --bench [--repeats R]\n");
     std::exit(2);
+}
+
+int parse_count(const char* text) {
+    char* end = nullptr;
+    const long value = std::strtol(text, &end, 10);
+    if (*end != '\0' || value < 1 || value > 100000) usage();
+    return static_cast<int>(value);
 }
 
 }  // namespace
@@ -111,21 +160,28 @@ void check_mode(const fs::path& case_dir, const fs::path& out_dir) {
 int main(int argc, char** argv) {
     std::vector<std::string> paths;
     bool bench = false;
+    int repeats = 5;
     for (int a = 1; a < argc; ++a) {
         const std::string arg = argv[a];
         if (arg == "--bench") {
             bench = true;
+        } else if (arg == "--repeats" && a + 1 < argc) {
+            repeats = parse_count(argv[++a]);
         } else if (!arg.empty() && arg[0] != '-') {
             paths.push_back(arg);
         } else {
             usage();
         }
     }
-    if (bench || paths.size() != 2) usage();
+    if (paths.size() != (bench ? 1u : 2u)) usage();
 
     try {
         print_device();
-        check_mode(paths[0], paths[1]);
+        if (bench) {
+            bench_mode(paths[0], repeats);
+        } else {
+            check_mode(paths[0], paths[1]);
+        }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "adi_cuda: %s\n", e.what());
         return 1;

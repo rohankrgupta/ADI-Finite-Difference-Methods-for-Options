@@ -35,7 +35,7 @@ from adi_heston.solver import _predict
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CASES = ["tiny", "small", "medium", "large"]
 ALL_CASES = BASE_CASES + sorted(fixtures.VARIANTS)
-LATEST_STAGE = 4
+LATEST_STAGE = 5
 INTERMEDIATE_TOLERANCE = 1e-12  # the fixture tolerance for single kernels
 RESIDUAL_TOLERANCE = 1e-12  # backward error of the tridiagonal solves
 # Distinct values of c = theta_adi*dtau, so factor sets: the start-up c equals the main c when theta_adi = 1/2.
@@ -53,6 +53,9 @@ def required_outputs(stage: int, case: str) -> tuple[list[str], list[str]]:
     if stage >= 4:
         if case in BASE_CASES:
             fixture_outputs += ["solve_A1", "solve_A2"]
+    if stage >= 5:
+        if case in BASE_CASES:  # the Douglas time loop for a European put
+            fixture_outputs += ["douglas_step", "U_final"]
     return fixture_outputs, intermediates
 
 

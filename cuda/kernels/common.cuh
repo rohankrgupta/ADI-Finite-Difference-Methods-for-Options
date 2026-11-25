@@ -94,6 +94,19 @@ private:
     std::size_t count_ = 0;
 };
 
+// Owns one CUDA stream. Created blocking, so it also orders against cudaMemcpy on the legacy default stream.
+class CudaStream {
+public:
+    CudaStream() { CUDA_CHECK(cudaStreamCreate(&stream_)); }
+    ~CudaStream() { cudaStreamDestroy(stream_); }
+    CudaStream(const CudaStream&) = delete;
+    CudaStream& operator=(const CudaStream&) = delete;
+    cudaStream_t get() const { return stream_; }
+
+private:
+    cudaStream_t stream_ = nullptr;
+};
+
 // Times work on one stream with a pair of CUDA events.
 class EventTimer {
 public:
