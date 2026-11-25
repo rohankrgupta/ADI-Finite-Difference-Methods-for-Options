@@ -38,8 +38,9 @@ struct Workspace {
     DeviceBuffer<real> Y0;   // the predictor U + dtau*A U (+ dtau*lam)
     DeviceBuffer<real> A0U;  // Craig-Sneyd, Modified Craig-Sneyd
     DeviceBuffer<real> A1U;  // Craig-Sneyd, Modified Craig-Sneyd: the second pass subtracts c*A1U
-    DeviceBuffer<real> AU;   // Modified Craig-Sneyd: A U, for the correction A Y2 - A U
+    DeviceBuffer<real> AU;   // Modified Craig-Sneyd, Hundsdorfer-Verwer: A U, for the correction A Y2 - A U
     DeviceBuffer<real> Y2;   // result of the first pass
+    DeviceBuffer<real> A2Y2; // Hundsdorfer-Verwer: A2 Y2, for the second v-solve
 };
 
 // One schedule row, ready to enqueue.
@@ -64,6 +65,7 @@ struct StepContext {
 void enqueue_douglas_step(const StepContext& ctx, const StepPlan& plan);
 void enqueue_craig_sneyd_step(const StepContext& ctx, const StepPlan& plan);
 void enqueue_modified_craig_sneyd_step(const StepContext& ctx, const StepPlan& plan);
+void enqueue_hundsdorfer_verwer_step(const StepContext& ctx, const StepPlan& plan);
 
 class AdiSolver {
 public:

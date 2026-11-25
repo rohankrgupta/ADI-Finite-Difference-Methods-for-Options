@@ -37,8 +37,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CASES = ["tiny", "small", "medium", "large"]
 ALL_CASES = BASE_CASES + sorted(fixtures.VARIANTS)
 LATEST_STAGE = 7
-# Schemes whose time loop the port runs (stage 6: Douglas; stage 7 adds the corrected schemes one by one).
-LOOP_SCHEMES = {"douglas", "craig_sneyd", "modified_craig_sneyd"}
+# Schemes whose time loop the port runs (stage 6: Douglas; stage 7: all four).
+LOOP_SCHEMES = set(fixtures.SCHEME_IDS)  # all four
 INTERMEDIATE_TOLERANCE = 1e-12  # the fixture tolerance for single kernels
 RESIDUAL_TOLERANCE = 1e-12  # backward error of the tridiagonal solves
 # Distinct values of c = theta_adi*dtau, so factor sets: the start-up c equals the main c when theta_adi = 1/2.

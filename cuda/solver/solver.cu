@@ -32,7 +32,14 @@ const char* scheme_name(Scheme scheme) {
 }
 
 bool AdiSolver::supports(Scheme scheme) {
-    return scheme == Scheme::douglas || scheme == Scheme::craig_sneyd || scheme == Scheme::modified_craig_sneyd;
+    switch (scheme) {
+        case Scheme::douglas:
+        case Scheme::craig_sneyd:
+        case Scheme::modified_craig_sneyd:
+        case Scheme::hundsdorfer_verwer:
+            return true;
+    }
+    return false;
 }
 
 AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
@@ -59,6 +66,12 @@ AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
         ws_.Y2 = DeviceBuffer<real>(n);
     }
     if (scheme == Scheme::modified_craig_sneyd) ws_.AU = DeviceBuffer<real>(n);
+    if (scheme == Scheme::hundsdorfer_verwer) {
+        ws_.Y0 = DeviceBuffer<real>(n);
+        ws_.AU = DeviceBuffer<real>(n);
+        ws_.Y2 = DeviceBuffer<real>(n);
+        ws_.A2Y2 = DeviceBuffer<real>(n);
+    }
     U0_ = DeviceBuffer<real>(problem.U0);
     if (american_) {
         ws_.lam = DeviceBuffer<real>(n);
@@ -109,8 +122,9 @@ void AdiSolver::enqueue(const StepPlan& p) {
         case Scheme::modified_craig_sneyd:
             enqueue_modified_craig_sneyd_step(ctx, p);
             break;
-        default:
-            throw std::runtime_error(std::string("scheme ") + scheme_name(p.scheme) + " is not implemented yet");
+        case Scheme::hundsdorfer_verwer:
+            enqueue_hundsdorfer_verwer_step(ctx, p);
+            break;
     }
     // American: project after the row's last v-solve, start-up rows included (Python: solve()).
     if (american_) launch_ikonen_toivanen(ctx.op, ws_.U.data(), ws_.lam.data(), payoff_.data(), p.dtau, stream_);

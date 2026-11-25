@@ -15,6 +15,8 @@
 //   Craig-Sneyd:  Y0~ = Y0 + dtau/2 (A0 Y2 - A0U),  A1X = A1U, A2X = A2U.
 //   Modified CS:  Y0~ = Y0 + c (A0 Y2 - A0U) + (1/2 - theta) dtau (A Y2 - A U),
 //                 A1X = A1U, A2X = A2U.
+//   Hundsdorfer-Verwer:  Y0~ = Y0 + dtau/2 (A Y2 - A U),  A1X = A1 Y2, A2X = A2 Y2
+//                 (K4 stores A2 Y2 for the second v-solve).
 // Every arrow is a global dependency, so the kernels run one after another on
 // one stream; the parallelism is inside each kernel (one thread per node in K1
 // and K4, one per grid line in the solves). The American update that follows
@@ -39,8 +41,9 @@ struct CorrectionArgs {
     const real* Y0;   // the predictor
     const real* A0U;  // Craig-Sneyd, Modified Craig-Sneyd
     const real* A1U;  // Craig-Sneyd, Modified Craig-Sneyd: the second pass subtracts c*A1U
-    const real* AU;   // Modified Craig-Sneyd: A U = (A0U + A1U) + A2U
+    const real* AU;   // Modified Craig-Sneyd, Hundsdorfer-Verwer: A U = (A0U + A1U) + A2U
     real* R1;         // out: Y0~ - c*A1X, row 0 = boundary
+    real* A2Y2;       // out, Hundsdorfer-Verwer: A2 Y2 for the second v-solve
     real c;           // theta_adi * dtau
     real half_dtau;   // 0.5 * dtau, computed on the host as Python computes it
     real mcs_weight;  // (0.5 - theta_adi) * dtau, likewise
@@ -71,6 +74,11 @@ __global__ void correction_kernel(OperatorView op, CorrectionArgs a) {
             // modified_craig_sneyd_step: Y0 + c*(A0 Y2 - A0U) + (0.5 - theta)*dtau*(A Y2 - A U); second pass with A1U
             y0_tilde = (ld(a.Y0 + k) + a.c * (a0y2 - ld(a.A0U + k))) + a.mcs_weight * change;
             a1x = ld(a.A1U + k);
+        } else {
+            // hundsdorfer_verwer_step: Y0 + 0.5*dtau*(A Y2 - A U); second pass with A1 Y2 and A2 Y2
+            y0_tilde = ld(a.Y0 + k) + a.half_dtau * change;
+            a1x = a1y2;
+            a.A2Y2[k] = a2y2;
         }
     }
     a.R1[k] = (i == 0) ? a.boundary : y0_tilde - a.c * a1x;
@@ -147,6 +155,25 @@ void enqueue_modified_craig_sneyd_step(const StepContext& ctx, const StepPlan& p
 
     ctx.tridiag->solve_s(p.factor_set, w.R.data(), w.Y1.data(), ctx.stream);
     ctx.tridiag->solve_v(p.factor_set, w.Y1.data(), w.A2U.data(), w.U.data(), ctx.stream);
+}
+
+void enqueue_hundsdorfer_verwer_step(const StepContext& ctx, const StepPlan& p) {
+    Workspace& w = *ctx.ws;
+    douglas_pass(ctx, p, nullptr, w.Y0.data(), nullptr, w.AU.data(), w.Y2.data());
+
+    CorrectionArgs args{};
+    args.Y2 = w.Y2.data();
+    args.Y0 = w.Y0.data();
+    args.AU = w.AU.data();
+    args.R1 = w.R.data();
+    args.A2Y2 = w.A2Y2.data();
+    args.c = p.c;
+    args.half_dtau = 0.5 * p.dtau;
+    args.boundary = p.boundary;
+    launch_correction<Scheme::hundsdorfer_verwer>(ctx.op, args, ctx.stream);
+
+    ctx.tridiag->solve_s(p.factor_set, w.R.data(), w.Y1.data(), ctx.stream);
+    ctx.tridiag->solve_v(p.factor_set, w.Y1.data(), w.A2Y2.data(), w.U.data(), ctx.stream);
 }
 
 }  // namespace adi
