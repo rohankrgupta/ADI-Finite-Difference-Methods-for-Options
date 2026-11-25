@@ -6,8 +6,9 @@
 //       `python -m adi_heston.fixtures check CASE_DIR OUT_DIR` and
 //       scripts/check_cuda.py: apply_A0/A1/A2 and solve_A1/A2 on kernel_input,
 //       k1_R1 / k1_A2U (the explicit stage with the one-step arguments),
-//       tridiag_sets (factor sets the schedule needs), and for the Douglas
-//       European base cases douglas_step and U_final.
+//       tridiag_sets (factor sets the schedule needs), and the time loop:
+//       douglas_step and U_final for the base cases; step, U_final (plus
+//       step_lam and lam_final if American) for the variant cases.
 //   adi_cuda INPUTS_DIR --bench [--repeats R]
 //       Benchmark mode: one warm-up and R timed runs (default 5) of the whole
 //       schedule, timed with CUDA events on the work stream. Prints
@@ -103,21 +104,34 @@ void check_mode(const fs::path& case_dir, const fs::path& out_dir) {
     for (const adi::Step& step : problem.schedule) schedule_sets.prepare(step.theta * step.dtau, nullptr);
     adi::write_bin(out_dir / "tridiag_sets.bin", {static_cast<double>(schedule_sets.factor_sets())});
 
-    // The time loop: so far Douglas for a European put (the base cases).
-    if (problem.scheme != 0 || problem.american) return;
+    // The time loop (implemented so far: Douglas, European and American).
+    if (problem.scheme != 0) return;
+    if (problem.american && problem.lam_input.empty()) {
+        throw std::runtime_error(case_dir.string() + ": an American case needs lam_input.bin");
+    }
     const adi::CudaStream stream;
     adi::AdiSolver solver(problem, stream.get());
-    std::vector<double> U;
+    const adi::Scheme scheme = static_cast<adi::Scheme>(problem.scheme);
+    std::vector<double> U, lam_out;
+    std::vector<double>* lam_back = problem.american ? &lam_out : nullptr;
 
-    solver.reset(problem.kernel_input, nullptr);  // one Douglas step from kernel_input
-    solver.enqueue_step({dtau, theta, boundary}, adi::Scheme::douglas);
-    solver.download(U, nullptr);
-    adi::write_bin(out_dir / "douglas_step.bin", U);
+    // One row from kernel_input (and lam_input), no start-up; an American row ends with the update.
+    solver.reset(problem.kernel_input, problem.american ? &problem.lam_input : nullptr);
+    solver.enqueue_step({dtau, theta, boundary}, scheme);
+    solver.download(U, lam_back);
+    if (problem.has_settings) {  // variant case
+        adi::write_bin(out_dir / "step.bin", U);
+        if (problem.american) adi::write_bin(out_dir / "step_lam.bin", lam_out);
+    } else {  // base case
+        adi::write_bin(out_dir / "douglas_step.bin", U);
+    }
 
-    solver.reset(problem.U0, nullptr);  // the full run from the payoff
+    // The full run from the payoff, with lam = 0 for an American option.
+    solver.reset(problem.U0, nullptr);
     solver.enqueue_schedule();
-    solver.download(U, nullptr);
+    solver.download(U, lam_back);
     adi::write_bin(out_dir / "U_final.bin", U);
+    if (problem.american) adi::write_bin(out_dir / "lam_final.bin", lam_out);
 }
 
 void bench_mode(const fs::path& dir, int repeats) {

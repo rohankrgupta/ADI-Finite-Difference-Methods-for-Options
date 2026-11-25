@@ -131,6 +131,7 @@ HostProblem load_case(const fs::path& dir) {
             static_cast<std::size_t>(settings[2]) % 2 != 0) {
             throw std::runtime_error(settings_path.string() + ": start-up half-steps must be even and fit the schedule");
         }
+        p.has_settings = true;
         p.scheme = static_cast<int>(settings[0]);
         p.american = settings[1] != 0.0;
         p.startup_half_steps = static_cast<std::size_t>(settings[2]);

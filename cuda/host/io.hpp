@@ -39,7 +39,8 @@ struct HostProblem {
 
     // From settings.bin. Folders without it (the base cases) are Douglas for a European put; their
     // start-up rows are Douglas steps anyway, so startup_half_steps stays 0.
-    int scheme = 0;  // 0 Douglas, 1 Craig-Sneyd, 2 Modified Craig-Sneyd, 3 Hundsdorfer-Verwer
+    bool has_settings = false;  // variant cases and benchmark inputs have settings.bin; base cases do not
+    int scheme = 0;             // 0 Douglas, 1 Craig-Sneyd, 2 Modified Craig-Sneyd, 3 Hundsdorfer-Verwer
     bool american = false;
     std::size_t startup_half_steps = 0;
 

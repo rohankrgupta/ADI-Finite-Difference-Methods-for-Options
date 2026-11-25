@@ -1,6 +1,7 @@
 // -----------------------------------------------------------------------------
-// K1, the explicit stage shared by every ADI scheme, and the probe kernel
-// used by the single-kernel fixture checks.
+// K1, the explicit stage shared by every ADI scheme, the Ikonen-Toivanen
+// update for American options, and the probe kernel used by the
+// single-kernel fixture checks.
 //
 // Thread mapping: one thread per node, 32x8 blocks with x along j (contiguous
 // in memory), so a warp reads 32 neighbouring values of each array. Stencil
@@ -45,6 +46,27 @@ __global__ void explicit_stage_kernel(OperatorView op, ExplicitStageArgs a) {
     if (a.AU) a.AU[k] = au;
 }
 
+// max as np.maximum and std::max compute it: on a tie (+0 against -0 included) the first argument.
+__device__ __forceinline__ real numpy_max(real a, real b) { return (a < b) ? b : a; }
+
+__global__ void ikonen_toivanen_kernel(OperatorView op, real* U, real* lam, const real* payoff, real dtau,
+                                       real inv_dtau) {
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    const int i = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= op.rows || j >= op.cols) return;
+    const int k = i * op.cols + j;
+    const real u_bar = U[k];
+    const real l = lam[k];
+    const real g = ld(payoff + i);
+    U[k] = numpy_max(u_bar - dtau * l, g);
+#ifdef ADI_EXACT
+    (void)inv_dtau;
+    lam[k] = numpy_max(real(0), l + (g - u_bar) / dtau);  // as Python
+#else
+    lam[k] = numpy_max(real(0), l + (g - u_bar) * inv_dtau);  // no division
+#endif
+}
+
 __global__ void apply_probe_kernel(OperatorView op, const real* X, real* A0X, real* A1X, real* A2X) {
     const int j = blockIdx.x * blockDim.x + threadIdx.x;
     const int i = blockIdx.y * blockDim.y + threadIdx.y;
@@ -59,6 +81,13 @@ __global__ void apply_probe_kernel(OperatorView op, const real* X, real* A0X, re
 
 void launch_explicit_stage(const OperatorView& op, const ExplicitStageArgs& args, cudaStream_t stream) {
     explicit_stage_kernel<<<node_grid(op), dim3(kBlockX, kBlockY), 0, stream>>>(op, args);
+    CUDA_CHECK_LAST();
+}
+
+void launch_ikonen_toivanen(const OperatorView& op, real* U, real* lam, const real* payoff, real dtau,
+                            cudaStream_t stream) {
+    ikonen_toivanen_kernel<<<node_grid(op), dim3(kBlockX, kBlockY), 0, stream>>>(op, U, lam, payoff, dtau,
+                                                                                real(1) / dtau);
     CUDA_CHECK_LAST();
 }
 

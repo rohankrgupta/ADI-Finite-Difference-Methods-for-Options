@@ -61,7 +61,8 @@ public:
     // Uploads the operators, allocates the work arrays and factorizes once per distinct c of the schedule.
     AdiSolver(const HostProblem& problem, cudaStream_t stream);
 
-    // Start from a host array (and multiplier), or from the problem's U0 kept on the device (lam = 0).
+    // Start from a host array, or from the problem's U0 kept on the device. For an American option the
+    // multiplier starts from *lam, or from zero when lam is null (and always in reset_to_initial).
     void reset(const std::vector<double>& U, const std::vector<double>* lam);
     void reset_to_initial();
 
@@ -85,7 +86,8 @@ private:
     DeviceOperators ops_;
     Tridiag tridiag_;
     Workspace ws_;
-    DeviceBuffer<real> U0_;  // the problem's initial solution, for reset_to_initial
+    DeviceBuffer<real> U0_;      // the problem's initial solution, for reset_to_initial
+    DeviceBuffer<real> payoff_;  // payoff per s-node (rows values), American only
     std::vector<StepPlan> plans_;
     double setup_ms_ = 0;
 };

@@ -21,6 +21,7 @@ Author:  Ganesh Arivoli <arivoli@wisc.edu>
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -35,7 +36,7 @@ from adi_heston.solver import _predict
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_CASES = ["tiny", "small", "medium", "large"]
 ALL_CASES = BASE_CASES + sorted(fixtures.VARIANTS)
-LATEST_STAGE = 5
+LATEST_STAGE = 6
 INTERMEDIATE_TOLERANCE = 1e-12  # the fixture tolerance for single kernels
 RESIDUAL_TOLERANCE = 1e-12  # backward error of the tridiagonal solves
 # Distinct values of c = theta_adi*dtau, so factor sets: the start-up c equals the main c when theta_adi = 1/2.
@@ -56,7 +57,35 @@ def required_outputs(stage: int, case: str) -> tuple[list[str], list[str]]:
     if stage >= 5:
         if case in BASE_CASES:  # the Douglas time loop for a European put
             fixture_outputs += ["douglas_step", "U_final"]
+    # Variant cases: the time loop of Douglas from stage 6 (American), of every scheme from stage 7.
+    if case in fixtures.VARIANTS and (stage >= 7 or (stage >= 6 and fixtures.VARIANTS[case][1] == "douglas")):
+        fixture_outputs += json.loads((fixtures.DEFAULT_DIR / case / "meta.json").read_text())["outputs"]
     return fixture_outputs, intermediates
+
+
+def american_properties(case_dir: Path, out_dir: Path, exact: bool) -> list[tuple[str, str, float | None]]:
+    """U >= payoff, lam >= 0 and lam*(U - payoff) = 0 for the one-step and full-run outputs. Complementarity
+    must be exactly 0 in an exact build; the default build multiplies by 1/dtau, so it may be off by rounding."""
+    payoff = fixtures.load(case_dir, "U0")
+    rows = []
+    for U_name, lam_name in (("step", "step_lam"), ("U_final", "lam_final")):
+        U_path, lam_path = out_dir / f"{U_name}.bin", out_dir / f"{lam_name}.bin"
+        if not (U_path.exists() and lam_path.exists()):
+            rows.append((f"american {U_name}", "MISSING", None))
+            continue
+        U = np.fromfile(U_path, dtype="<f8").reshape(payoff.shape)
+        lam = np.fromfile(lam_path, dtype="<f8").reshape(payoff.shape)
+        product = float(np.max(np.abs(lam * (U - payoff))))
+        limit = 0.0 if exact else 1e-12 * float(np.max(np.abs(lam))) * float(np.max(np.abs(U)))
+        problems = []
+        if np.min(U - payoff) < 0:
+            problems.append("U < payoff")
+        if np.min(lam) < 0:
+            problems.append("lam < 0")
+        if product > limit:
+            problems.append("lam*(U - payoff) != 0")
+        rows.append((f"american {U_name}", "PASS" if not problems else "FAIL (" + ", ".join(problems) + ")", product))
+    return rows
 
 
 def operators_from_files(case_dir: Path, absolute: bool = False) -> HestonOperators:
@@ -151,12 +180,15 @@ def check_case(binary: Path, build: Path, case: str, stage: int, exact: bool) ->
         if case in BASE_CASES:
             rows += solve_residuals(case_dir, out_dir)
         rows.append(factor_set_check(case, case_dir, out_dir))
+    if "step_lam" in fixture_outputs:
+        rows += american_properties(case_dir, out_dir, exact)
 
     ok = all(status == "PASS" for _, status, _ in rows)
     print(f"{case}: {'ok' if ok else 'FAILED'}")
     for name, status, err in rows:
         value = "-" if err is None else (f"{int(err)}" if name == "tridiag_sets" else f"{err:.2e}")
-        label = "count" if name == "tridiag_sets" else ("backward error" if "residual" in name else "rel. error")
+        label = ("count" if name == "tridiag_sets" else "backward error" if "residual" in name
+                 else "max|lam*(U-g)|" if name.startswith("american") else "rel. error")
         print(f"    {name:18s} {status:20s} {label} {value}")
     return ok
 

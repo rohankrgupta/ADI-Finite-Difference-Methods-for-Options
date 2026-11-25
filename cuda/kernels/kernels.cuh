@@ -134,6 +134,12 @@ struct ExplicitStageArgs {
 // K1: A0U, A1U, A2U; Y0 = U + dtau*AU (+ dtau*lam); R1 = Y0 - c*A1U. One thread per node.
 void launch_explicit_stage(const OperatorView& op, const ExplicitStageArgs& args, cudaStream_t stream);
 
+// The Ikonen-Toivanen update after a row's last v-solve (Python: solver.ikonen_toivanen_update), in place:
+//     U = max(U_bar - dtau*lam, g),   lam = max(0, lam + (g - U_bar)/dtau)
+// where g = payoff[i] (rows values). Both use the unprojected U_bar and the old lam. One thread per node.
+void launch_ikonen_toivanen(const OperatorView& op, real* U, real* lam, const real* payoff, real dtau,
+                            cudaStream_t stream);
+
 // A0 X, A1 X and A2 X on the whole grid, for the single-kernel fixture checks.
 void launch_apply_probe(const OperatorView& op, const real* X, real* A0X, real* A1X, real* A2X,
                         cudaStream_t stream);

@@ -4,6 +4,7 @@
 // Setup uploads the operators, allocates every work array once and factorizes
 // the tridiagonal systems once per distinct c = theta*dtau of the schedule. The
 // time loop then only enqueues kernels: no allocation, no copies, no waiting.
+// For an American option every row ends with the Ikonen-Toivanen update.
 // An NVTX range "time_loop" marks it for Nsight Systems.
 //
 // Project: ADI finite-difference methods for American options under Heston
@@ -40,7 +41,6 @@ AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
     if (scheme != Scheme::douglas) {
         throw std::runtime_error(std::string("scheme ") + scheme_name(scheme) + " is not implemented yet");
     }
-    if (american_) throw std::runtime_error("American options are not implemented yet");
 
     const std::size_t n = problem.size();
     ws_.U = DeviceBuffer<real>(n);
@@ -48,6 +48,11 @@ AdiSolver::AdiSolver(const HostProblem& problem, cudaStream_t stream)
     ws_.Y1 = DeviceBuffer<real>(n);
     ws_.A2U = DeviceBuffer<real>(n);
     U0_ = DeviceBuffer<real>(problem.U0);
+    if (american_) {
+        ws_.lam = DeviceBuffer<real>(n);
+        ws_.lam.zero();
+        payoff_ = DeviceBuffer<real>(problem.payoff);
+    }
 
     for (std::size_t row = 0; row < problem.schedule.size(); ++row) {
         plans_.push_back(plan(problem.schedule[row], row < problem.startup_half_steps ? Scheme::douglas : scheme));
@@ -63,7 +68,15 @@ StepPlan AdiSolver::plan(const Step& step, Scheme scheme) {
 
 void AdiSolver::reset(const std::vector<double>& U, const std::vector<double>* lam) {
     ws_.U.upload(U);
-    if (lam) ws_.lam.upload(*lam);
+    if (!american_) {
+        if (lam) throw std::runtime_error("AdiSolver::reset: a multiplier was given for a European option");
+        return;
+    }
+    if (lam) {
+        ws_.lam.upload(*lam);
+    } else {
+        ws_.lam.zero();
+    }
 }
 
 void AdiSolver::reset_to_initial() {
@@ -81,6 +94,8 @@ void AdiSolver::enqueue(const StepPlan& p) {
         default:
             throw std::runtime_error(std::string("scheme ") + scheme_name(p.scheme) + " is not implemented yet");
     }
+    // American: project after the row's last v-solve, start-up rows included (Python: solve()).
+    if (american_) launch_ikonen_toivanen(ctx.op, ws_.U.data(), ws_.lam.data(), payoff_.data(), p.dtau, stream_);
 }
 
 void AdiSolver::enqueue_schedule() {
