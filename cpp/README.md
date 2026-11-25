@@ -44,8 +44,9 @@ python scripts/bench_cpu.py                                    # full sweep: CSV
 ```
 
 `--bench` times only the time loop, measured between barriers, so file reading and thread start-up are
-excluded. It prints `threads,rows,cols,steps,median_ms_per_step,min_ms_per_step`. The benchmark runs the
-Douglas scheme for a European put.
+excluded. It prints `threads,rows,cols,steps,median_ms_per_step,min_ms_per_step`. It runs the folder's problem:
+the scheme and option type in its `settings.bin` (`generate --grid M N STEPS --scheme NAME --american`), or the
+Douglas scheme for a European put if there is none.
 
 ## Layout
 

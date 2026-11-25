@@ -11,6 +11,9 @@
 //   adi_port INPUTS_DIR --bench [--threads T] [--repeats R]
 //       Benchmark mode. Runs the time loop once to warm up, then R timed runs, and prints
 //       one CSV line: threads,rows,cols,steps,median_ms_per_step,min_ms_per_step.
+//       It runs the folder's problem: the scheme and option type in settings.bin (written by
+//       `python -m adi_heston.fixtures generate --grid ... [--scheme NAME] [--american]`), or
+//       Douglas for a European put if there is none.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -58,14 +61,24 @@ std::vector<double> load_grid_array(const fs::path& path, const Operators& op) {
     return values;
 }
 
+// The problem a folder describes. Without settings.bin: Douglas for a European put.
+struct Settings {
+    adi::Scheme scheme = adi::Scheme::douglas;
+    bool american = false;
+    std::size_t startup_half_steps = 0;
+};
+
 // settings.bin = [scheme id, american (0 or 1), start-up half-steps]; see python/adi_heston/fixtures.py.
-void check_variant(const fs::path& case_dir, const fs::path& out_dir, std::size_t threads, const Operators& op) {
-    const std::vector<double> settings = adi::read_bin(case_dir / "settings.bin");
+Settings read_settings(const fs::path& dir) {
+    const std::vector<double> settings = adi::read_bin(dir / "settings.bin");
     if (settings.size() != 3) throw std::runtime_error("settings.bin must hold 3 values");
     if (settings[0] < 0.0 || settings[0] > 3.0) throw std::runtime_error("settings.bin: scheme id must be 0 to 3");
-    const auto scheme = static_cast<adi::Scheme>(static_cast<int>(settings[0]));
-    const bool american = settings[1] != 0.0;
-    const auto startup_half_steps = static_cast<std::size_t>(settings[2]);
+    return {static_cast<adi::Scheme>(static_cast<int>(settings[0])), settings[1] != 0.0,
+            static_cast<std::size_t>(settings[2])};
+}
+
+void check_variant(const fs::path& case_dir, const fs::path& out_dir, std::size_t threads, const Operators& op) {
+    const auto [scheme, american, startup_half_steps] = read_settings(case_dir);
 
     const std::vector<double> payoff = load_grid_array(case_dir / "U0.bin", op);
     const std::vector<double> scalars = adi::read_bin(case_dir / "scalars.bin");  // [c, dtau, theta, boundary]
@@ -138,12 +151,15 @@ void bench_mode(const fs::path& dir, std::size_t threads, std::size_t repeats) {
     const Operators op = load_operators(dir);
     const std::vector<double> U0 = load_grid_array(dir / "U0.bin", op);
     const std::vector<adi::Step> schedule = load_schedule(dir);
-    adi::AdiSolver solver(op, threads);
+    const Settings settings = fs::exists(dir / "settings.bin") ? read_settings(dir) : Settings{};
+    adi::AdiSolver solver(op, threads, settings.scheme, settings.startup_half_steps);
 
-    std::vector<double> ms_per_step;
+    std::vector<double> ms_per_step, lam;  // lam: the multiplier of an American option, U0 its payoff
     for (std::size_t run = 0; run <= repeats; ++run) {  // run 0 is the warm-up
         std::vector<double> U = U0;
-        const double seconds = solver.run(U, schedule);
+        if (settings.american) lam.assign(op.size(), 0.0);
+        const double seconds = solver.run(U, schedule, settings.american ? U0.data() : nullptr,
+                                          settings.american ? lam.data() : nullptr);
         if (run > 0) ms_per_step.push_back(1e3 * seconds / static_cast<double>(schedule.size()));
     }
     std::sort(ms_per_step.begin(), ms_per_step.end());
