@@ -34,7 +34,7 @@ endif()
 option(ADI_EXACT "No FMA and Python's exact operations: outputs byte-identical to the fixtures" OFF)
 option(ADI_RECOMPUTE_FACTORS "Recompute the Thomas factors every step instead of once at setup" OFF)
 option(ADI_DEBUG_SYNC "Synchronize and check for errors after every kernel launch" OFF)
-option(ADI_THOMAS_SOLVES "Solve along v with Thomas, not the partitioned method (always so with ADI_EXACT)" OFF)
+option(ADI_THOMAS_SOLVES "Thomas solves only, no partitioned solves (always so with ADI_EXACT)" OFF)
 set(ADI_PREFETCH_DEPTH 8 CACHE STRING "Elements the Thomas sweeps load ahead of their arithmetic (1 to 32)")
 
 # Each .cu file launches only its own kernels through plain host functions, so no separable compilation.

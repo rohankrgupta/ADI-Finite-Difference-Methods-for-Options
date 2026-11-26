@@ -220,7 +220,7 @@ struct SChunks {
 };
 struct SChunkBuffers {
     DeviceBuffer<real> a, fwd_gain, back_gain;
-    int L = 0;  // 0: no layout fits (columns too tall); solve along s with Thomas
+    int L = 0;  // 0: solve along s with Thomas (enough columns to fill the SMs, or no layout fits)
     int group = 0;
     int warps = 0;
     SChunks view(const real* pivot, const real* cstar) const {
@@ -233,8 +233,10 @@ void launch_solve_s_partition(const OperatorView& op, const SChunks& ch, const r
                               cudaStream_t stream);
 #endif
 
-// Thomas solves of (I - c*A1) and (I - c*A2), one thread per grid line, with the factors computed once
-// per distinct value of c. Keeps a copy of the operator view: the DeviceOperators must outlive it.
+// The tridiagonal solves of (I - c*A1) and (I - c*A2), with the factors computed once per distinct value of c:
+// Thomas, one thread per grid line (tridiag.cu), or, in the default build, the partitioned solves where they
+// pay (partition.cu), chosen per factor set at setup. Keeps a copy of the operator view: the DeviceOperators
+// must outlive it.
 class Tridiag {
 public:
     explicit Tridiag(const OperatorView& op);

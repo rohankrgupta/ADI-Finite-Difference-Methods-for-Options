@@ -98,28 +98,32 @@ Kernels of one schedule row:
 |---|---|---|
 | explicit stage (K1) | one per node, 32 x 8 blocks along j | stencils on `U`, predictor `Y0 = U + dtau*A U (+ dtau*lam)`, right-hand side `Y0 - c*A1 U` |
 | `solve_s` | one per chunk of a column (or per column: Thomas) | partitioned solve along s when the columns cannot fill the GPU, otherwise Thomas; a warp reads neighbouring columns |
-| `solve_v` | one block per row, one thread per chunk of the row | partitioned solve along v, the row in shared memory; right-hand side `Y1 - c*A2 X` formed on the way in |
+| `solve_v` | one block per row, one thread per chunk of the row | partitioned solve along v, the row in shared memory (Thomas if a row does not fit); right-hand side `Y1 - c*A2 X` formed on the way in |
 | correction (K4) | one per node | corrected schemes only: stencils on `Y2`, corrected predictor and the second right-hand side, in one pass |
 | Ikonen–Toivanen | one per node | American only: `U = max(U - dtau*lam, g)`, `lam = max(0, lam + (g - U)/dtau)` |
 
 Douglas runs K1, `solve_s`, `solve_v` (3 kernels per row); the corrected schemes add K4 and a second pair of solves
 (6). American rows end with the update. Every kernel needs the whole result of the one before, so the parallelism is
-inside each kernel. The node kernels keep the GPU full; the solves run one thread per grid line, which leaves most of
-the GPU idle, so they take most of each row. With so few threads nothing hides the wait for memory, so each sweep
-issues its loads `ADI_PREFETCH_DEPTH` elements ahead of its arithmetic, in two register buffers that take turns;
-this made the solves 2.3–2.9× faster at 1601 x 801 without changing a single output bit.
+inside each kernel. The node kernels keep the GPU full; the solves are the hard part, since a Thomas solve is a
+chain along one grid line and one thread per line leaves most of the GPU idle. Three measures address that
+(`kernels/tridiag.cu`, `kernels/partition.cu`):
 
-The solve along v goes further (`kernels/partition.cu`): A2 and its factors are the same for every row, so each row
-is cut into chunks, one thread per chunk. Each thread runs its chunk of both Thomas sweeps from zero, a scan over
-the chunks (warp shuffles) gives every chunk its true starting value, and a fix-up adds that value times a
-precomputed gain. The number of warps per row comes from the CUDA occupancy calculator, and a row too long for
-shared memory falls back to Thomas. Only the chunk starting values are computed differently from Thomas, so the
-results agree to rounding (about 1e-15 per solve), not bit for bit.
+1. **Loads ahead.** The Thomas sweeps issue their loads `ADI_PREFETCH_DEPTH` elements ahead of their arithmetic, in
+   two register buffers that take turns, so the few threads do not wait on memory at every element. The results do
+   not change.
+2. **Partitioned solve along v.** A2 and its factors are the same for every row, so each row is cut into chunks, one
+   thread per chunk. Each thread runs its chunk of both Thomas sweeps from zero, a scan over the chunks (warp
+   shuffles) gives every chunk its true starting value, and a fix-up adds that value times a precomputed gain. The
+   row stays in shared memory; the number of warps per row comes from the CUDA occupancy calculator, and a row too
+   long for shared memory is solved with Thomas.
+3. **Partitioned solve along s**, when the columns are too few to give every SM a warp (fewer than 32 × the SM
+   count): a block holds a group of neighbouring columns and all their chunks, which stay in registers. With more
+   columns, Thomas already streams near the memory bandwidth, and the partitioned solve, which moves the same bytes
+   plus a scan, would not help.
 
-The solve along s uses the same method when the columns are too few to give every SM a warp (fewer than 32 × the
-SM count); a block then holds a group of neighbouring columns and all their chunks, which stay in registers. With
-more columns, Thomas already streams near the memory bandwidth, and the partitioned solve, which moves the same
-bytes plus a scan, would not help. Benchmark mode prints the method and layout of both solves on stderr.
+Only the chunks' starting values are computed differently from Thomas, so the partitioned solves agree with Thomas
+to rounding (about 1e-15 per solve), not bit for bit. Benchmark mode prints the method and layout of both solves on
+stderr.
 
 **Exactness.** The stencils, the explicit stage, the corrections and the Thomas sweeps follow the Python reference
 operation by operation, including multiplying zero coefficients on the Dirichlet row (signed zeros) and NumPy's tie

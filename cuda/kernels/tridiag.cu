@@ -19,6 +19,10 @@
 // elements ahead into two register buffers (pipelined_sweep); the arithmetic,
 // and so every result, is unchanged.
 //
+// In the default build, Tridiag runs the partitioned solves of partition.cu
+// instead where they pay; these Thomas solves remain for the other lines, the
+// exact and recompute builds, and ADI_THOMAS_SOLVES.
+//
 // Project: ADI finite-difference methods for American options under Heston
 //          Math/CS 714, UW–Madison, Fall 2026
 // Author:  Ganesh Arivoli <arivoli@wisc.edu>
