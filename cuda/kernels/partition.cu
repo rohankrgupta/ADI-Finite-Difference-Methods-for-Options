@@ -279,7 +279,7 @@ void launch_solve_v_partition(const OperatorView& op, const VChunks& ch, real c,
 
 namespace {
 
-constexpr int kRowChunks[] = {16, 8, 4};    // rows per chunk the kernel is compiled for, longest first
+constexpr int kRowChunks[] = {16, 8, 4};         // rows per chunk the kernel is compiled for, longest first
 constexpr int kColumnGroups[] = {32, 16, 8, 4};  // columns per block, widest first (4 doubles: one sector)
 
 // Thread (column c, chunk g) of a warp: lane = g*group + c, so a warp reads `group` neighbouring columns of
@@ -359,11 +359,11 @@ __device__ real scan_up(real Z, real M, int lane, int warp, int c, int g, SLayou
                 m *= ma;
             }
         }
-        const real after = __shfl_down_sync(kFullMask, z, 1);  // lanes >= warps hold (0, 1)
+        const real after = __shfl_down_sync(kFullMask, z, 1);  // lane 31 gets its own z: not used
         if (lane < s.warps) enter[lane * s.group + cc] = after;
     }
     __syncthreads();
-    return ez + em * enter[warp * s.group + c];
+    return (warp == s.warps - 1) ? ez : ez + em * enter[warp * s.group + c];  // nothing after the last warp
 }
 
 // (I - c*A1) X = R: a block solves `group` columns, one thread per chunk of L rows. Only the chunk's z stays
@@ -433,7 +433,8 @@ __global__ void solve_s_partition_kernel(int rows, int cols, SChunks ch, const r
     }
 }
 
-// One thread per (chunk, column): -c * lower, and the running products of the chunk's step slopes.
+// One thread per (chunk, column): -c * lower, and the running products of the chunk's step slopes (with
+// reciprocal pivots, a forward step's slope is -a_i * p_i).
 __global__ void build_s_chunks_kernel(OperatorView op, real c, const real* s_cstar, const real* s_pivot, int L,
                                       real* a, real* fwd_gain, real* back_gain) {
     const int j = blockIdx.x * blockDim.x + threadIdx.x;
