@@ -168,13 +168,13 @@ struct FactorView {
     real c;
 };
 
-// The default build solves along v with the partitioned method (partition.cu); the exact and recompute
-// builds, and ADI_THOMAS_SOLVES, keep the Thomas solve.
+// The default build solves along s and v with the partitioned method (partition.cu); the exact and recompute
+// builds, and ADI_THOMAS_SOLVES, keep the Thomas solves.
 #if !defined(ADI_EXACT) && !defined(ADI_RECOMPUTE_FACTORS) && !defined(ADI_THOMAS_SOLVES)
-#define ADI_PARTITION_V 1
+#define ADI_PARTITIONED 1
 #endif
 
-#ifdef ADI_PARTITION_V
+#ifdef ADI_PARTITIONED
 // Precomputed for the partitioned solve along v (partition.cu), per factor set. A row is cut into C = 32*parts
 // chunks of L values; seq 0 is the Dirichlet row, seq 1 every row >= 1. Element t of chunk q is stored at
 // (seq*L + t)*C + q, so the threads' loads are coalesced.
@@ -205,6 +205,32 @@ VChunkBuffers build_v_chunks(const OperatorView& op, real c, const real* v_cstar
                              cudaStream_t stream);
 void launch_solve_v_partition(const OperatorView& op, const VChunks& ch, real c, const real* Y, const real* A2X,
                               real* X, cudaStream_t stream);
+
+// Precomputed for the partitioned solve along s, per factor set: columns are cut into chunks of L rows; a block
+// holds `group` neighbouring columns and all their chunks in `warps` warps. 2D arrays are rows*cols, row-major.
+struct SChunks {
+    const real* a;          // -c * A1 lower diagonal
+    const real* pivot;      // the Thomas factors
+    const real* cstar;
+    const real* fwd_gain;   // d_i per unit of d before the chunk
+    const real* back_gain;  // x_i per unit of x after the chunk
+    int L;
+    int group;
+    int warps;
+};
+struct SChunkBuffers {
+    DeviceBuffer<real> a, fwd_gain, back_gain;
+    int L = 0;  // 0: no layout fits (columns too tall); solve along s with Thomas
+    int group = 0;
+    int warps = 0;
+    SChunks view(const real* pivot, const real* cstar) const {
+        return {a.data(), pivot, cstar, fwd_gain.data(), back_gain.data(), L, group, warps};
+    }
+};
+SChunkBuffers build_s_chunks(const OperatorView& op, real c, const real* s_cstar, const real* s_pivot,
+                             cudaStream_t stream);
+void launch_solve_s_partition(const OperatorView& op, const SChunks& ch, const real* R, real* X,
+                              cudaStream_t stream);
 #endif
 
 // Thomas solves of (I - c*A1) and (I - c*A2), one thread per grid line, with the factors computed once
@@ -225,14 +251,16 @@ public:
     // Y, A2X and X must be different arrays.
     void solve_v(int set, const real* Y, const real* A2X, real* X, cudaStream_t stream);
 
-    // How the solve along v runs for a factor set, for the log: "Thomas" or the partition layout.
+    // How the solves run for a factor set, for the log: "Thomas" or the partition layout.
+    std::string s_method(int set) const;
     std::string v_method(int set) const;
 
 private:
     struct Set {
         real c = 0;
         DeviceBuffer<real> s_cstar, s_pivot, v_cstar, v_pivot;
-#ifdef ADI_PARTITION_V
+#ifdef ADI_PARTITIONED
+        SChunkBuffers s_chunks;
         VChunkBuffers v_chunks;
 #endif
     };

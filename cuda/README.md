@@ -23,7 +23,7 @@ cmake --build cuda/build/default -j
 | `ADI_RECOMPUTE_FACTORS` | Recompute the Thomas factors in every solve, as the C++ port does, instead of once at setup |
 | `ADI_DEBUG_SYNC` | Synchronize and check for errors after every kernel launch |
 | `ADI_PREFETCH_DEPTH` (default 8) | Elements the Thomas sweeps load ahead of their arithmetic, 1 to 32 |
-| `ADI_THOMAS_SOLVES` | Solve along v with Thomas instead of the partitioned solve (always so with `ADI_EXACT` or `ADI_RECOMPUTE_FACTORS`) |
+| `ADI_THOMAS_SOLVES` | Solve with Thomas instead of the partitioned solves (always so with `ADI_EXACT` or `ADI_RECOMPUTE_FACTORS`) |
 
 Give each configuration its own folder under `cuda/build/`, for example
 `cmake -S cuda -B cuda/build/exact -DADI_EXACT=ON`.
@@ -77,7 +77,7 @@ C++ port on the same inputs (`adi_port --bench`, at 1, 8 and 16 threads). Pass `
 | `kernels/kernels.cuh` | Device copies of the operators, per-node stencils for A0, A1, A2, kernel declarations |
 | `kernels/explicit.cu` | The explicit stage (K1), the Ikonen–Toivanen update, the probe kernel for single-kernel checks |
 | `kernels/tridiag.cu` | Factorization and the Thomas solves along s and along v |
-| `kernels/partition.cu` | The partitioned solve along v (default build) and its precomputed chunk factors |
+| `kernels/partition.cu` | The partitioned solves along s and v (default build), their layouts and precomputed chunk factors |
 | `solver/schemes.cu` | The four schemes: kernel order per row, and the fused correction kernel of the corrected schemes |
 | `solver/solver.*` | `AdiSolver`: one-time setup, the time loop, timing |
 
@@ -97,7 +97,7 @@ Kernels of one schedule row:
 | Kernel | Threads | Work |
 |---|---|---|
 | explicit stage (K1) | one per node, 32 x 8 blocks along j | stencils on `U`, predictor `Y0 = U + dtau*A U (+ dtau*lam)`, right-hand side `Y0 - c*A1 U` |
-| `solve_s` | one per column, 32-thread blocks | Thomas along s; a warp reads 32 neighbouring columns |
+| `solve_s` | one per chunk of a column (or per column: Thomas) | partitioned solve along s when the columns cannot fill the GPU, otherwise Thomas; a warp reads neighbouring columns |
 | `solve_v` | one block per row, one thread per chunk of the row | partitioned solve along v, the row in shared memory; right-hand side `Y1 - c*A2 X` formed on the way in |
 | correction (K4) | one per node | corrected schemes only: stencils on `Y2`, corrected predictor and the second right-hand side, in one pass |
 | Ikonen–Toivanen | one per node | American only: `U = max(U - dtau*lam, g)`, `lam = max(0, lam + (g - U)/dtau)` |
@@ -115,6 +115,11 @@ the chunks (warp shuffles) gives every chunk its true starting value, and a fix-
 precomputed gain. The number of warps per row comes from the CUDA occupancy calculator, and a row too long for
 shared memory falls back to Thomas. Only the chunk starting values are computed differently from Thomas, so the
 results agree to rounding (about 1e-15 per solve), not bit for bit.
+
+The solve along s uses the same method when the columns are too few to give every SM a warp (fewer than 32 × the
+SM count); a block then holds a group of neighbouring columns and all their chunks, which stay in registers. With
+more columns, Thomas already streams near the memory bandwidth, and the partitioned solve, which moves the same
+bytes plus a scan, would not help. Benchmark mode prints the method and layout of both solves on stderr.
 
 **Exactness.** The stencils, the explicit stage, the corrections and the Thomas sweeps follow the Python reference
 operation by operation, including multiplying zero coefficients on the Dirichlet row (signed zeros) and NumPy's tie

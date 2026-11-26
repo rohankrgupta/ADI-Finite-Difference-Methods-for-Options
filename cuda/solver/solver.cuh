@@ -90,7 +90,8 @@ public:
 
     double setup_ms() const { return setup_ms_; }
     std::size_t factor_sets() const { return tridiag_.factor_sets(); }
-    std::string v_method() const { return tridiag_.v_method(plans_.back().factor_set); }  // for the log
+    std::string s_method() const { return tridiag_.s_method(plans_.back().factor_set); }  // for the log
+    std::string v_method() const { return tridiag_.v_method(plans_.back().factor_set); }
 
 private:
     StepPlan plan(const Step& step, Scheme scheme);

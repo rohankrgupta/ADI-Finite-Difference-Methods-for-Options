@@ -138,6 +138,7 @@ void bench_mode(const fs::path& dir, int repeats) {
     const adi::HostProblem problem = adi::load_case(dir);
     const adi::CudaStream stream;
     adi::AdiSolver solver(problem, stream.get());
+    std::fprintf(stderr, "adi_cuda: solve along s: %s\n", solver.s_method().c_str());
     std::fprintf(stderr, "adi_cuda: solve along v: %s\n", solver.v_method().c_str());
     adi::EventTimer timer;
 

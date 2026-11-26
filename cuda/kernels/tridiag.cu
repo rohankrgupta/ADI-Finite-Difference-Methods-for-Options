@@ -302,7 +302,8 @@ int Tridiag::prepare(real c, cudaStream_t stream) {
     CUDA_CHECK_LAST();
     factorize_v_kernel<<<1, 2, 0, stream>>>(op_, c, set.v_cstar.data(), set.v_pivot.data());
     CUDA_CHECK_LAST();
-#ifdef ADI_PARTITION_V
+#ifdef ADI_PARTITIONED
+    set.s_chunks = build_s_chunks(op_, c, set.s_cstar.data(), set.s_pivot.data(), stream);
     set.v_chunks = build_v_chunks(op_, c, set.v_cstar.data(), set.v_pivot.data(), stream);
 #endif
 #else
@@ -320,6 +321,13 @@ FactorView Tridiag::view(int set) {
 // The solve kernels take their arrays as __restrict__, so the host checks they are distinct.
 void Tridiag::solve_s(int set, const real* R, real* X, cudaStream_t stream) {
     if (R == X) throw std::runtime_error("Tridiag::solve_s: R and X must be different arrays");
+#ifdef ADI_PARTITIONED
+    const Set& s = sets_.at(static_cast<std::size_t>(set));
+    if (s.s_chunks.L > 0) {
+        launch_solve_s_partition(op_, s.s_chunks.view(s.s_pivot.data(), s.s_cstar.data()), R, X, stream);
+        return;
+    }
+#endif
     solve_s_kernel<<<line_blocks(op_.cols), kLineBlock, 0, stream>>>(op_, view(set), R, X);
     CUDA_CHECK_LAST();
 }
@@ -328,7 +336,7 @@ void Tridiag::solve_v(int set, const real* Y, const real* A2X, real* X, cudaStre
     if (Y == X || A2X == X || (A2X && A2X == Y)) {
         throw std::runtime_error("Tridiag::solve_v: Y, A2X and X must be different arrays");
     }
-#ifdef ADI_PARTITION_V
+#ifdef ADI_PARTITIONED
     const Set& s = sets_.at(static_cast<std::size_t>(set));
     if (s.v_chunks.L > 0) {
         launch_solve_v_partition(op_, s.v_chunks.view(), s.c, Y, A2X, X, stream);
@@ -339,8 +347,22 @@ void Tridiag::solve_v(int set, const real* Y, const real* A2X, real* X, cudaStre
     CUDA_CHECK_LAST();
 }
 
+std::string Tridiag::s_method(int set) const {
+#ifdef ADI_PARTITIONED
+    const Set& s = sets_.at(static_cast<std::size_t>(set));
+    if (s.s_chunks.L > 0) {
+        return "partitioned, chunks of " + std::to_string(s.s_chunks.L) + " rows, " +
+               std::to_string(s.s_chunks.group) + " columns and " + std::to_string(s.s_chunks.warps) +
+               " warp(s) per block";
+    }
+#else
+    (void)set;
+#endif
+    return "Thomas";
+}
+
 std::string Tridiag::v_method(int set) const {
-#ifdef ADI_PARTITION_V
+#ifdef ADI_PARTITIONED
     const Set& s = sets_.at(static_cast<std::size_t>(set));
     if (s.v_chunks.L > 0) {
         return "partitioned, " + std::to_string(s.v_chunks.parts) + " warp(s) per row, chunks of " +
