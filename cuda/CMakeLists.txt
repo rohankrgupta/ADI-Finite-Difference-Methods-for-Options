@@ -3,6 +3,7 @@
 #
 # Uses CUDA 12.8 by default; pass -DCMAKE_CUDA_COMPILER=... to choose another.
 # Options (all OFF): ADI_EXACT, ADI_RECOMPUTE_FACTORS, ADI_DEBUG_SYNC.
+# ADI_PREFETCH_DEPTH (default 8): elements the Thomas sweeps load ahead.
 #
 # Project: ADI finite-difference methods for American options under Heston
 #          Math/CS 714, UW–Madison, Fall 2026
@@ -33,6 +34,7 @@ endif()
 option(ADI_EXACT "No FMA and Python's exact operations: outputs byte-identical to the fixtures" OFF)
 option(ADI_RECOMPUTE_FACTORS "Recompute the Thomas factors every step instead of once at setup" OFF)
 option(ADI_DEBUG_SYNC "Synchronize and check for errors after every kernel launch" OFF)
+set(ADI_PREFETCH_DEPTH 8 CACHE STRING "Elements the Thomas sweeps load ahead of their arithmetic (1 to 32)")
 
 # Each .cu file launches only its own kernels through plain host functions, so no separable compilation.
 add_executable(adi_cuda main.cu host/io.cpp kernels/explicit.cu kernels/tridiag.cu solver/solver.cu
@@ -43,6 +45,7 @@ target_compile_options(adi_cuda PRIVATE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic -ffp-contract=off>
   $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo -Xcompiler=-Wall,-Wextra,-ffp-contract=off>)
 
+target_compile_definitions(adi_cuda PRIVATE ADI_PREFETCH_DEPTH=${ADI_PREFETCH_DEPTH})
 if(ADI_EXACT)
   target_compile_definitions(adi_cuda PRIVATE ADI_EXACT=1)
   target_compile_options(adi_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-fmad=false>)
@@ -55,4 +58,5 @@ if(ADI_DEBUG_SYNC)
 endif()
 
 message(STATUS "adi_cuda: nvcc ${CMAKE_CUDA_COMPILER_VERSION}, sm_${CMAKE_CUDA_ARCHITECTURES}, ${CMAKE_BUILD_TYPE}, "
-               "ADI_EXACT=${ADI_EXACT} ADI_RECOMPUTE_FACTORS=${ADI_RECOMPUTE_FACTORS} ADI_DEBUG_SYNC=${ADI_DEBUG_SYNC}")
+               "ADI_EXACT=${ADI_EXACT} ADI_RECOMPUTE_FACTORS=${ADI_RECOMPUTE_FACTORS} ADI_DEBUG_SYNC=${ADI_DEBUG_SYNC} "
+               "ADI_PREFETCH_DEPTH=${ADI_PREFETCH_DEPTH}")
