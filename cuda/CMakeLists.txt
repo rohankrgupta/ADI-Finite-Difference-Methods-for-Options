@@ -2,7 +2,7 @@
 # Build for the CUDA port of the ADI time loop (executable: adi_cuda).
 #
 # Uses CUDA 12.8 by default; pass -DCMAKE_CUDA_COMPILER=... to choose another.
-# Options (all OFF): ADI_EXACT, ADI_RECOMPUTE_FACTORS, ADI_DEBUG_SYNC.
+# Options (all OFF): ADI_EXACT, ADI_RECOMPUTE_FACTORS, ADI_DEBUG_SYNC, ADI_THOMAS_SOLVES.
 # ADI_PREFETCH_DEPTH (default 8): elements the Thomas sweeps load ahead.
 #
 # Project: ADI finite-difference methods for American options under Heston
@@ -34,11 +34,12 @@ endif()
 option(ADI_EXACT "No FMA and Python's exact operations: outputs byte-identical to the fixtures" OFF)
 option(ADI_RECOMPUTE_FACTORS "Recompute the Thomas factors every step instead of once at setup" OFF)
 option(ADI_DEBUG_SYNC "Synchronize and check for errors after every kernel launch" OFF)
+option(ADI_THOMAS_SOLVES "Solve along v with Thomas, not the partitioned method (always so with ADI_EXACT)" OFF)
 set(ADI_PREFETCH_DEPTH 8 CACHE STRING "Elements the Thomas sweeps load ahead of their arithmetic (1 to 32)")
 
 # Each .cu file launches only its own kernels through plain host functions, so no separable compilation.
-add_executable(adi_cuda main.cu host/io.cpp kernels/explicit.cu kernels/tridiag.cu solver/solver.cu
-                        solver/schemes.cu)
+add_executable(adi_cuda main.cu host/io.cpp kernels/explicit.cu kernels/tridiag.cu kernels/partition.cu
+                        solver/solver.cu solver/schemes.cu)
 target_include_directories(adi_cuda PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(adi_cuda PRIVATE ${CMAKE_DL_LIBS})  # the header-only NVTX library loads its tool with dlopen
 target_compile_options(adi_cuda PRIVATE
@@ -53,10 +54,13 @@ endif()
 if(ADI_RECOMPUTE_FACTORS)
   target_compile_definitions(adi_cuda PRIVATE ADI_RECOMPUTE_FACTORS=1)
 endif()
+if(ADI_THOMAS_SOLVES)
+  target_compile_definitions(adi_cuda PRIVATE ADI_THOMAS_SOLVES=1)
+endif()
 if(ADI_DEBUG_SYNC)
   target_compile_definitions(adi_cuda PRIVATE ADI_DEBUG_SYNC=1)
 endif()
 
 message(STATUS "adi_cuda: nvcc ${CMAKE_CUDA_COMPILER_VERSION}, sm_${CMAKE_CUDA_ARCHITECTURES}, ${CMAKE_BUILD_TYPE}, "
                "ADI_EXACT=${ADI_EXACT} ADI_RECOMPUTE_FACTORS=${ADI_RECOMPUTE_FACTORS} ADI_DEBUG_SYNC=${ADI_DEBUG_SYNC} "
-               "ADI_PREFETCH_DEPTH=${ADI_PREFETCH_DEPTH}")
+               "ADI_PREFETCH_DEPTH=${ADI_PREFETCH_DEPTH} ADI_THOMAS_SOLVES=${ADI_THOMAS_SOLVES}")

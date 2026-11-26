@@ -277,7 +277,6 @@ __global__ void solve_v_kernel(OperatorView op, FactorView f, const real* __rest
             X[row + last - t] = x_next;
         });
 }
-
 }  // namespace
 
 Tridiag::Tridiag(const OperatorView& op) : op_(op) {
@@ -303,6 +302,9 @@ int Tridiag::prepare(real c, cudaStream_t stream) {
     CUDA_CHECK_LAST();
     factorize_v_kernel<<<1, 2, 0, stream>>>(op_, c, set.v_cstar.data(), set.v_pivot.data());
     CUDA_CHECK_LAST();
+#ifdef ADI_PARTITION_V
+    set.v_chunks = build_v_chunks(op_, c, set.v_cstar.data(), set.v_pivot.data(), stream);
+#endif
 #else
     (void)stream;
 #endif
@@ -326,8 +328,28 @@ void Tridiag::solve_v(int set, const real* Y, const real* A2X, real* X, cudaStre
     if (Y == X || A2X == X || (A2X && A2X == Y)) {
         throw std::runtime_error("Tridiag::solve_v: Y, A2X and X must be different arrays");
     }
+#ifdef ADI_PARTITION_V
+    const Set& s = sets_.at(static_cast<std::size_t>(set));
+    if (s.v_chunks.L > 0) {
+        launch_solve_v_partition(op_, s.v_chunks.view(), s.c, Y, A2X, X, stream);
+        return;
+    }
+#endif
     solve_v_kernel<<<line_blocks(op_.rows), kLineBlock, 0, stream>>>(op_, view(set), Y, A2X, X);
     CUDA_CHECK_LAST();
+}
+
+std::string Tridiag::v_method(int set) const {
+#ifdef ADI_PARTITION_V
+    const Set& s = sets_.at(static_cast<std::size_t>(set));
+    if (s.v_chunks.L > 0) {
+        return "partitioned, " + std::to_string(s.v_chunks.parts) + " warp(s) per row, chunks of " +
+               std::to_string(s.v_chunks.L);
+    }
+#else
+    (void)set;
+#endif
+    return "Thomas";
 }
 
 }  // namespace adi

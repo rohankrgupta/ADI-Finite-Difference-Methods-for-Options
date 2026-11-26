@@ -23,6 +23,7 @@ cmake --build cuda/build/default -j
 | `ADI_RECOMPUTE_FACTORS` | Recompute the Thomas factors in every solve, as the C++ port does, instead of once at setup |
 | `ADI_DEBUG_SYNC` | Synchronize and check for errors after every kernel launch |
 | `ADI_PREFETCH_DEPTH` (default 8) | Elements the Thomas sweeps load ahead of their arithmetic, 1 to 32 |
+| `ADI_THOMAS_SOLVES` | Solve along v with Thomas instead of the partitioned solve (always so with `ADI_EXACT` or `ADI_RECOMPUTE_FACTORS`) |
 
 Give each configuration its own folder under `cuda/build/`, for example
 `cmake -S cuda -B cuda/build/exact -DADI_EXACT=ON`.
@@ -76,6 +77,7 @@ C++ port on the same inputs (`adi_port --bench`, at 1, 8 and 16 threads). Pass `
 | `kernels/kernels.cuh` | Device copies of the operators, per-node stencils for A0, A1, A2, kernel declarations |
 | `kernels/explicit.cu` | The explicit stage (K1), the Ikonen–Toivanen update, the probe kernel for single-kernel checks |
 | `kernels/tridiag.cu` | Factorization and the Thomas solves along s and along v |
+| `kernels/partition.cu` | The partitioned solve along v (default build) and its precomputed chunk factors |
 | `solver/schemes.cu` | The four schemes: kernel order per row, and the fused correction kernel of the corrected schemes |
 | `solver/solver.*` | `AdiSolver`: one-time setup, the time loop, timing |
 
@@ -96,7 +98,7 @@ Kernels of one schedule row:
 |---|---|---|
 | explicit stage (K1) | one per node, 32 x 8 blocks along j | stencils on `U`, predictor `Y0 = U + dtau*A U (+ dtau*lam)`, right-hand side `Y0 - c*A1 U` |
 | `solve_s` | one per column, 32-thread blocks | Thomas along s; a warp reads 32 neighbouring columns |
-| `solve_v` | one per row, 32-thread blocks | Thomas along v, right-hand side `Y1 - c*A2 X` formed on the fly |
+| `solve_v` | one block per row, one thread per chunk of the row | partitioned solve along v, the row in shared memory; right-hand side `Y1 - c*A2 X` formed on the way in |
 | correction (K4) | one per node | corrected schemes only: stencils on `Y2`, corrected predictor and the second right-hand side, in one pass |
 | Ikonen–Toivanen | one per node | American only: `U = max(U - dtau*lam, g)`, `lam = max(0, lam + (g - U)/dtau)` |
 
@@ -106,6 +108,13 @@ inside each kernel. The node kernels keep the GPU full; the solves run one threa
 the GPU idle, so they take most of each row. With so few threads nothing hides the wait for memory, so each sweep
 issues its loads `ADI_PREFETCH_DEPTH` elements ahead of its arithmetic, in two register buffers that take turns;
 this made the solves 2.3–2.9× faster at 1601 x 801 without changing a single output bit.
+
+The solve along v goes further (`kernels/partition.cu`): A2 and its factors are the same for every row, so each row
+is cut into chunks, one thread per chunk. Each thread runs its chunk of both Thomas sweeps from zero, a scan over
+the chunks (warp shuffles) gives every chunk its true starting value, and a fix-up adds that value times a
+precomputed gain. The number of warps per row comes from the CUDA occupancy calculator, and a row too long for
+shared memory falls back to Thomas. Only the chunk starting values are computed differently from Thomas, so the
+results agree to rounding (about 1e-15 per solve), not bit for bit.
 
 **Exactness.** The stencils, the explicit stage, the corrections and the Thomas sweeps follow the Python reference
 operation by operation, including multiplying zero coefficients on the Dirichlet row (signed zeros) and NumPy's tie

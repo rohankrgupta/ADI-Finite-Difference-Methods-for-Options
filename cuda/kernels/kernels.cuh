@@ -21,6 +21,7 @@
 #include <climits>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "host/io.hpp"
@@ -167,6 +168,45 @@ struct FactorView {
     real c;
 };
 
+// The default build solves along v with the partitioned method (partition.cu); the exact and recompute
+// builds, and ADI_THOMAS_SOLVES, keep the Thomas solve.
+#if !defined(ADI_EXACT) && !defined(ADI_RECOMPUTE_FACTORS) && !defined(ADI_THOMAS_SOLVES)
+#define ADI_PARTITION_V 1
+#endif
+
+#ifdef ADI_PARTITION_V
+// Precomputed for the partitioned solve along v (partition.cu), per factor set. A row is cut into C = 32*parts
+// chunks of L values; seq 0 is the Dirichlet row, seq 1 every row >= 1. Element t of chunk q is stored at
+// (seq*L + t)*C + q, so the threads' loads are coalesced.
+struct VChunks {
+    const real* a;            // -c * A2 lower diagonal (zero at j = 0)
+    const real* pivot;
+    const real* fwd_gain;     // d_j per unit of d before the chunk
+    const real* cstar;        // zero at j = cols-1
+    const real* back_gain;    // x_j per unit of x after the chunk
+    const real* fwd_window;   // [(seq*5 + s)*C + q]: product of chunk slopes over chunks q-2^s+1 .. q
+    const real* back_window;  // ... over chunks q .. q+2^s-1
+    const real* fwd_prefix;   // [seq*C + q]: product of chunk slopes from the warp's first chunk to q
+    const real* back_suffix;  // ... from q to the warp's last chunk
+    int L;
+    int parts;  // warps per row
+};
+struct VChunkBuffers {
+    DeviceBuffer<real> a, pivot, fwd_gain, cstar, back_gain, fwd_window, back_window, fwd_prefix, back_suffix;
+    int L = 0;  // 0: a row does not fit in shared memory; solve along v with Thomas
+    int parts = 0;
+    VChunks view() const {
+        return {a.data(),           pivot.data(),       fwd_gain.data(),   cstar.data(),
+                back_gain.data(),   fwd_window.data(),  back_window.data(), fwd_prefix.data(),
+                back_suffix.data(), L,                  parts};
+    }
+};
+VChunkBuffers build_v_chunks(const OperatorView& op, real c, const real* v_cstar, const real* v_pivot,
+                             cudaStream_t stream);
+void launch_solve_v_partition(const OperatorView& op, const VChunks& ch, real c, const real* Y, const real* A2X,
+                              real* X, cudaStream_t stream);
+#endif
+
 // Thomas solves of (I - c*A1) and (I - c*A2), one thread per grid line, with the factors computed once
 // per distinct value of c. Keeps a copy of the operator view: the DeviceOperators must outlive it.
 class Tridiag {
@@ -185,10 +225,16 @@ public:
     // Y, A2X and X must be different arrays.
     void solve_v(int set, const real* Y, const real* A2X, real* X, cudaStream_t stream);
 
+    // How the solve along v runs for a factor set, for the log: "Thomas" or the partition layout.
+    std::string v_method(int set) const;
+
 private:
     struct Set {
         real c = 0;
         DeviceBuffer<real> s_cstar, s_pivot, v_cstar, v_pivot;
+#ifdef ADI_PARTITION_V
+        VChunkBuffers v_chunks;
+#endif
     };
     FactorView view(int set);
 

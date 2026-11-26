@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include "host/io.hpp"
@@ -89,6 +90,7 @@ public:
 
     double setup_ms() const { return setup_ms_; }
     std::size_t factor_sets() const { return tridiag_.factor_sets(); }
+    std::string v_method() const { return tridiag_.v_method(plans_.back().factor_set); }  // for the log
 
 private:
     StepPlan plan(const Step& step, Scheme scheme);
