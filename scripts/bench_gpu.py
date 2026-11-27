@@ -209,7 +209,7 @@ def plot(rows: list[dict], numpy_rows: list[dict], out_dir: Path) -> None:
     # GPU speed-up over the best C++ time, per scheme; European and American side by side, one shared axis.
     schemes = [s for s in SCHEMES if s in {r["scheme"] for r in rows}]
     speedups = {(s, a): [best_cpp(s, a, g) / pick("gpu", s, a, g)[0] for g in grids] for s in schemes for a in (0, 1)}
-    low = min(min(v) for v in speedups.values()) / 1.3
+    low = min(min(min(v) for v in speedups.values()) / 1.3, 0.8)  # keep the 1x line in view
     high = max(max(v) for v in speedups.values()) * 1.3
     ticks = [t for t in (0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100) if low <= t <= high]
     fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.5), sharey=True)
